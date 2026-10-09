@@ -318,6 +318,7 @@ async function startGame() {
     await db.from('rooms').update({ status: 'playing', game: gameData }).eq('id', roomCode);
     currentGame = gameData;
     showScreen('game-screen');
+    console.log('[Game] Started! playerOrder:', gameData.playerOrder, 'first turn:', gameData.turnPlayerId);
     renderGame(gameData);
   } catch(e) { console.error('startGame error:', e); notify('❌ ผิดพลาด: ' + e.message); }
 }
@@ -385,7 +386,8 @@ async function advanceTurn() {
     renderGame(currentGame);
     var _data = await db.from('rooms').select('players').eq('id', roomCode).single();
     var nextPlayer = _data.data && _data.data.players ? _data.data.players[nextPid] : null;
-    if (nextPlayer && nextPlayer.isBot) setTimeout(function() { botPlay(nextPid); }, 800);
+    console.log('[Turn] nextPid:', nextPid, 'isBot:', nextPlayer ? nextPlayer.isBot : 'unknown', 'name:', nextPlayer ? nextPlayer.name : '??');
+    if (nextPlayer && nextPlayer.isBot) { console.log('[Bot] Scheduling bot', nextPid, 'to play in 800ms'); setTimeout(function() { botPlay(nextPid); }, 800); }
   } catch(e) { console.error('advanceTurn error:', e); }
 }
 
@@ -438,8 +440,9 @@ async function handleKnockout(koId) {
 // --- BOT ---
 async function botPlay(botId) {
   try {
-    if (!currentGame || currentGame.status !== 'playing') return;
-    if (currentGame.turnPlayerId !== botId) return;
+    console.log('[Bot] botPlay called for', botId, '| turnPlayerId:', currentGame ? currentGame.turnPlayerId : 'null', 'status:', currentGame ? currentGame.status : 'null');
+    if (!currentGame || currentGame.status !== 'playing') { console.log('[Bot] Early return: no game or not playing'); return; }
+    if (currentGame.turnPlayerId !== botId) { console.log('[Bot] Early return: not my turn'); return; }
     await delay(600);
     var hand = codesToCards(currentGame.hands[botId] || []);
     var deck = currentGame.deck.slice();
