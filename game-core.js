@@ -25,7 +25,7 @@ function initDb() {
 // Load supabase then init
 (function() {
   var script = document.createElement('script');
-  script.src = 'https://unpkg.com/@supabase/supabase-js@2.39.3/dist/umd/index.js';
+  script.src = 'supabase.js';
   script.onload = initDb;
   script.onerror = function() { console.error('[Supabase] CDN failed!'); };
   document.head.appendChild(script);
