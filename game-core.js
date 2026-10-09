@@ -1,8 +1,8 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v5 (new layout)
+// 🃏 DUMMY RUMMY — game-core.js v10 (full rules rewrite)
+// Rules: ดัมมี่ 7 ใบ ตาม YouTube
 // ============================================================
 
-// --- SUPABASE CONFIG ---
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRidGxiZXltcmNob2Rsb2JveW1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1MTIxNTksImV4cCI6MjEwNzA4ODE1OX0.HHqLCDj3_rEAeGQxs-Yz8eX-xJG0VbMbYWIELC6LYbc';
 
@@ -12,16 +12,13 @@ function initDb() {
   try {
     if (typeof window.supabase !== 'undefined') {
       db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-      console.log('[Supabase] Connected! URL:', SUPABASE_URL);
+      console.log('[Supabase] Connected!');
     } else {
       console.error('[Supabase] CDN not loaded!');
     }
-  } catch(e) {
-    console.error('[Supabase] Init error:', e);
-  }
+  } catch(e) { console.error('[Supabase] Init error:', e); }
 }
 
-// Load supabase locally
 (function() {
   var script = document.createElement('script');
   script.src = 'supabase.js?v=1';
@@ -33,7 +30,10 @@ function initDb() {
 // --- CONSTANTS ---
 var SUITS = ['♠','♥','♦','♣'];
 var RANKS = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+var RANK_ORDER = {'A':1,'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'10':10,'J':11,'Q':12,'K':13};
+var RANK_ORDER_AHIGH = {'A':14,'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'10':10,'J':11,'Q':12,'K':13};
 
+// --- DECK ---
 function makeDeck() {
   var deck = [];
   for (var si = 0; si < SUITS.length; si++) {
@@ -41,7 +41,7 @@ function makeDeck() {
       deck.push({ suit: SUITS[si], rank: RANKS[ri], code: RANKS[ri] + SUITS[si] });
     }
   }
-  // NO jokers - standard 52 cards only
+  // NO jokers - standard 52 cards
   return deck;
 }
 
@@ -54,38 +54,43 @@ function shuffle(arr) {
   return a;
 }
 
+// --- CARD UTILS ---
 function cardPoints(card) {
-  if (!card) return 0;
-  if (card.isSpeto) return 50;
+  if (!card || card.isSpeto) return 50;
   if (card.rank === 'A') return 15;
-  if (['J','Q','K'].indexOf(card.rank) >= 0) return 10;
+  if (['J','Q','K','10'].indexOf(card.rank) >= 0) return 10;
   if (['2','3','4','5','6','7','8','9'].indexOf(card.rank) >= 0) return 5;
   return 0;
 }
 
+function isSpeto(card) {
+  return card && (card.code === '2♣' || card.code === 'Q♠');
+}
+
+function handCardClass(card) {
+  if (!card) return 'black';
+  if (isSpeto(card)) return 'speto';
+  if (card.suit === '♥' || card.suit === '♦') return 'red';
+  if (card.suit === '♣') return 'clubs';
+  return 'black';
+}
+
 function sortHand(hand) {
   return hand.slice().sort(function(a, b) {
-    if (a.isSpeto && !b.isSpeto) return 1;
-    if (!a.isSpeto && b.isSpeto) return -1;
-    var suitOrder = { '♠':0, '♥':1, '♦':2, '♣':3 };
-    var s1 = suitOrder[a.suit] !== undefined ? suitOrder[a.suit] : 4;
-    var s2 = suitOrder[b.suit] !== undefined ? suitOrder[b.suit] : 4;
+    if (isSpeto(a) && !isSpeto(b)) return 1;
+    if (!isSpeto(a) && isSpeto(b)) return -1;
+    var s1 = {'♠':0,'♥':1,'♦':2,'♣':3}[a.suit] ?? 4;
+    var s2 = {'♠':0,'♥':1,'♦':2,'♣':3}[b.suit] ?? 4;
     if (s1 !== s2) return s1 - s2;
-    var rankOrder = {'A':1,'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'10':10,'J':11,'Q':12,'K':13};
-    var rv = rankOrder[a.rank] || 14;
-    var rv2 = rankOrder[b.rank] || 14;
-    return rv - rv2;
+    return (RANK_ORDER[a.rank]||14) - (RANK_ORDER[b.rank]||14);
   });
 }
 
 function codeToCard(code) {
   if (!code) return null;
-  // Accept card object (pass-through)
   if (typeof code === 'object' && code !== null && code.code) return code;
-  // Handle string codes
-  // No jokers
-  if (code === '2♣') return { suit: '♣', rank: '2', code: '2♣', isSpeto: true };
-  if (code === 'Q♠') return { suit: '♠', rank: 'Q', code: 'Q♠', isSpeto: true };
+  if (code === '2♣') return { suit:'♣', rank:'2', code:'2♣', isSpeto:true };
+  if (code === 'Q♠') return { suit:'♠', rank:'Q', code:'Q♠', isSpeto:true };
   for (var si = 0; si < SUITS.length; si++) {
     var s = SUITS[si];
     if (code.endsWith(s)) {
@@ -106,7 +111,169 @@ function codesToCards(codes) {
   return result;
 }
 
-function delay(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
+// --- MELD FINDING (fixed A-run rules) ---
+// A can be low (A-2-3) OR high (Q-K-A). K-A-2 is NOT valid.
+function findMelds(hand) {
+  var melds = [];
+  var normals = hand.filter(function(c) { return !isSpeto(c); });
+
+  // --- SETS ---
+  var byRank = {};
+  for (var ni = 0; ni < normals.length; ni++) {
+    var nc = normals[ni];
+    if (!byRank[nc.rank]) byRank[nc.rank] = [];
+    byRank[nc.rank].push(nc);
+  }
+  for (var r in byRank) {
+    if (byRank[r].length >= 3) {
+      melds.push({ type: 'set', cards: byRank[r].slice() });
+    }
+  }
+
+  // --- RUNS (fixed A handling) ---
+  var bySuit = {};
+  for (var si = 0; si < normals.length; si++) {
+    var ns = normals[si];
+    if (!bySuit[ns.suit]) bySuit[ns.suit] = [];
+    bySuit[ns.suit].push(ns);
+  }
+
+  for (var suit in bySuit) {
+    var sc = bySuit[suit].slice().sort(function(a,b){
+      return (RANK_ORDER[a.rank]||14) - (RANK_ORDER[b.rank]||14);
+    });
+
+    // Separate Aces from other cards
+    var aces = sc.filter(function(c){ return c.rank === 'A'; });
+    var nonAces = sc.filter(function(c){ return c.rank !== 'A'; });
+
+    // Try runs WITHOUT Aces first
+    var run = [];
+    for (var i = 0; i < nonAces.length; i++) {
+      var cur = RANK_ORDER[nonAces[i].rank] || 14;
+      var prev = run.length > 0 ? RANK_ORDER[run[run.length-1].rank] : null;
+      if (prev !== null && cur === prev + 1) {
+        run.push(nonAces[i]);
+      } else {
+        if (run.length >= 3) melds.push({ type:'run', cards: run.slice(), suit: suit });
+        run = [nonAces[i]];
+      }
+    }
+    if (run.length >= 3) melds.push({ type:'run', cards: run.slice(), suit: suit });
+
+    // Try runs WITH Aces as LOW (A-2-3...)
+    if (aces.length > 0 && nonAces.length >= 2) {
+      var lowRun = aces.slice();
+      var sortedNon = nonAces.slice().sort(function(a,b){
+        return (RANK_ORDER[a.rank]||14) - (RANK_ORDER[b.rank]||14);
+      });
+      // Check if A can start a low run: A, then 2, then ...
+      if (sortedNon.length >= 2) {
+        var second = RANK_ORDER[sortedNon[0].rank] || 14;
+        if (second === 2) {
+          lowRun.push(sortedNon[0]);
+          for (var j = 1; j < sortedNon.length; j++) {
+            var curr = RANK_ORDER[sortedNon[j].rank] || 14;
+            var prevR = RANK_ORDER[lowRun[lowRun.length-1].rank] || 14;
+            if (curr === prevR + 1) {
+              lowRun.push(sortedNon[j]);
+            } else {
+              break;
+            }
+          }
+          if (lowRun.length >= 3) melds.push({ type:'run', cards: lowRun.slice(), suit: suit });
+        }
+      }
+    }
+
+    // Try runs WITH Aces as HIGH (Q-K-A)
+    if (aces.length > 0 && nonAces.length >= 2) {
+      var highRun = [];
+      var sortedNonDesc = nonAces.slice().sort(function(a,b){
+        return (RANK_ORDER[b.rank]||14) - (RANK_ORDER[a.rank]||14);
+      });
+      // Check if we have Q-K or J-Q-K near the end that can connect to A
+      var needHighAce = false;
+      var startCards = [];
+      for (var k = 0; k < sortedNonDesc.length; k++) {
+        var rv = RANK_ORDER[sortedNonDesc[k].rank] || 14;
+        if (rv >= 11) { // J=11, Q=12, K=13
+          startCards.push(sortedNonDesc[k]);
+        } else {
+          break;
+        }
+      }
+      if (startCards.length >= 2) {
+        startCards.sort(function(a,b){
+          return (RANK_ORDER[a.rank]||14) - (RANK_ORDER[b.rank]||14);
+        });
+        var lastRank = RANK_ORDER[startCards[startCards.length-1].rank] || 14;
+        if (lastRank === 12 || lastRank === 13) { // ends in Q or K
+          highRun = startCards.concat(aces);
+          // Verify it's consecutive up to A
+          var allRanks = highRun.slice().sort(function(a,b){
+            return (RANK_ORDER[b.rank]||14) - (RANK_ORDER[a.rank]||14);
+          });
+          var valid = true;
+          for (var m = 1; m < allRanks.length; m++) {
+            var diff = (RANK_ORDER[allRanks[m-1].rank]||14) - (RANK_ORDER[allRanks[m].rank]||14);
+            if (diff !== 1) { valid = false; break; }
+          }
+          // Also check: no 2 in the run (K-A-2 is invalid)
+          var hasTwo = highRun.some(function(c){ return c.rank === '2'; });
+          if (valid && !hasTwo && highRun.length >= 3) {
+            melds.push({ type:'run', cards: highRun.slice(), suit: suit });
+          }
+        }
+      }
+    }
+  }
+
+  return melds;
+}
+
+// Detect if picked cards from discard can form a valid meld with existing hand
+function canMeldWithPicked(pickedCodes, handCodes) {
+  var allCodes = handCodes.concat(pickedCodes);
+  var allCards = codesToCards(allCodes);
+  var melds = findMelds(allCards);
+  // Must find a meld that uses at least one of the picked cards
+  for (var i = 0; i < melds.length; i++) {
+    var meldCodes = melds[i].cards.map(function(c){ return c.code; });
+    var usesPicked = pickedCodes.some(function(pc){ return meldCodes.indexOf(pc) >= 0; });
+    if (usesPicked) return melds[i];
+  }
+  return null;
+}
+
+// Detect meld type name
+function detectMeldType(codes) {
+  if (!codes || codes.length < 3) return 'ไพ่';
+  var cards = codesToCards(codes);
+  if (cards.length === 0) return 'ไพ่';
+  var ranks = cards.map(function(c){ return c.rank; });
+  if (new Set(ranks).size === 1) return 'ตอง';
+  var bySuit = {};
+  for (var i = 0; i < cards.length; i++) {
+    if (!bySuit[cards[i].suit]) bySuit[cards[i].suit] = [];
+    bySuit[cards[i].suit].push(cards[i]);
+  }
+  for (var s in bySuit) {
+    var sc = bySuit[s].sort(function(a,b){
+      return (RANK_ORDER[a.rank]||14) - (RANK_ORDER[b.rank]||14);
+    });
+    if (sc.length >= 3) {
+      var ok = true;
+      for (var j = 1; j < sc.length; j++) {
+        if ((RANK_ORDER[sc[j].rank]||14) - (RANK_ORDER[sc[j-1].rank]||14) !== 1) {
+          ok = false; break;
+        }
+      }
+      if (ok) return 'เรียง';
+    }
+  }
+  return 'ไพ่';
+}
 
 // --- GAME STATE ---
 var myPlayerId = null;
@@ -116,10 +283,11 @@ var realtimeChannel = null;
 var currentGame = null;
 var selectedCards = [];
 var myTurn = false;
-var turnPlayerId = null;
 var selectedMeldIndex = null;
+var pendingPickedCodes = [];  // codes picked from discard this turn
+var pollInterval = null;
 
-// --- UTILITY ---
+// --- UTILS ---
 function genRoomCode() {
   var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   var code = '';
@@ -143,48 +311,7 @@ function showScreen(id) {
   } catch(e) { console.error('showScreen error:', e); }
 }
 
-function miniCardClass(card) {
-  if (!card) return 'black';
-  if (card.isSpeto) return 'speto';
-  if (card.suit === '♥' || card.suit === '♦') return 'red';
-  if (card.suit === '♣') return 'clubs';  /* clubs = blue, not confused with spades (black) */
-  return 'black';
-}
-
-function renderMiniCard(card) {
-  if (!card) return '';
-  var cls = miniCardClass(card);
-  var rank = card.rank;
-  var suit = card.suit;
-  return '<div class="mini-card ' + cls + '">' + rank + '<br>' + suit + '</div>';
-}
-
-function handCardClass(card) {
-  if (!card) return 'black';
-  if (card.isSpeto) return 'speto';
-  if (card.suit === '♥' || card.suit === '♦') return 'red';
-  if (card.suit === '♣') return 'clubs';  /* clubs = blue, not confused with spades (black) */
-  return 'black';
-}
-
-function confetti() {
-  try {
-    var c = document.getElementById('confetti');
-    if (!c) return;
-    c.innerHTML = '';
-    var colors = ['#ffd700','#e94560','#4caf50','#2196f3','#ff9800','#9c27b0'];
-    for (var i = 0; i < 80; i++) {
-      var p = document.createElement('div');
-      p.className = 'confetti-piece';
-      p.style.left = (Math.random() * 100) + '%';
-      p.style.background = colors[Math.floor(Math.random() * colors.length)];
-      p.style.animationDelay = (Math.random() * 2) + 's';
-      p.style.borderRadius = Math.random() > 0.5 ? '50%' : '0';
-      c.appendChild(p);
-    }
-    setTimeout(function() { if (c) c.innerHTML = ''; }, 5000);
-  } catch(e) {}
-}
+function delay(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
 
 // --- SUPABASE ---
 async function setupRealtime(rid) {
@@ -229,7 +356,7 @@ async function createRoom() {
       players['bot_' + i] = { id: 'bot_' + i, name: botNames[i], isBot: true, isHost: false };
     }
     var _data = await db.from('rooms').upsert({ id: roomCode, code: roomCode, players: players, status: 'lobby' });
-    if (_data.error) { notify('❌ สร้างห้องไม่สำเร็จ: ' + _data.error.message); return; }
+    if (_data.error) { notify('❌ สร้างห้องไม่สำเร็จ'); return; }
     showScreen('lobby-screen');
     document.getElementById('display-room-code').textContent = roomCode;
     await setupRealtime(roomCode);
@@ -278,7 +405,7 @@ async function leaveRoom() {
     }
     if (realtimeChannel) { realtimeChannel.unsubscribe(); realtimeChannel = null; }
     stopPolling();
-    roomCode = null; myPlayerId = null; currentGame = null; selectedCards = [];
+    roomCode = null; myPlayerId = null; currentGame = null; selectedCards = []; pendingPickedCodes = [];
     showScreen('home-screen');
   } catch(e) { console.error('leaveRoom error:', e); }
 }
@@ -299,15 +426,12 @@ async function startGame() {
       hands[playerIds[pi]] = handCards;
     }
     var firstCard = deck.pop();
-    var discardPile = [firstCard.code];
-    // Head card bonus
-    var headCard = firstCard;
-    var headPoints = 50;
-    if (firstCard.code === '2♣' || firstCard.code === 'Q♠') headPoints = 100;
+    var hp = 50;
+    if (firstCard.code === '2♣' || firstCard.code === 'Q♠') hp = 100;
     var gameData = {
-      deck: deck.map(function(c) { return c.code; }),
+      deck: deck.map(function(c){ return c.code; }),
       hands: hands,
-      discardPile: discardPile,
+      discardPile: [firstCard.code],
       turnPlayerId: playerIds[0],
       playerOrder: playerIds,
       phase: 'draw',
@@ -316,10 +440,12 @@ async function startGame() {
       scores: {},
       round: 1,
       turnStartTime: Date.now(),
-      headCard: headCard.code,
-      headPoints: headPoints,
+      headCard: firstCard.code,
+      headPoints: hp,
       hasFirstMeld: {},
-      pickedFromDiscard: {}
+      lastDiscard: null,       // { playerId, cardCode }
+      deckEmpty: false,
+      pickedFromDiscard: {}    // playerId -> [codes]
     };
     for (var mi = 0; mi < playerIds.length; mi++) {
       gameData.melds[playerIds[mi]] = [];
@@ -329,21 +455,12 @@ async function startGame() {
     await db.from('rooms').update({ status: 'playing', game: gameData }).eq('id', roomCode);
     currentGame = gameData;
     showScreen('game-screen');
-    console.log('[Game] Started! playerOrder:', gameData.playerOrder, 'first turn:', gameData.turnPlayerId);
     renderGame(gameData);
-    // Safety: if bot doesn't move in 5s, force advance
     setTimeout(function() {
-      if (currentGame && currentGame.status === 'playing' && currentGame.turnPlayerId !== myPlayerId) {
-        console.log('[Safety] Bot stalled, checking if advance needed...');
-        var order = currentGame.playerOrder || [];
-        var idx = order.indexOf(currentGame.turnPlayerId);
-        // Check if we need to manually trigger advance
-        if (currentGame.turnPlayerId && currentGame.turnPlayerId.indexOf('bot_') === 0) {
-          // Bot is stuck - manually trigger
-          botPlay(currentGame.turnPlayerId);
-        }
+      if (currentGame && currentGame.status === 'playing' && currentGame.turnPlayerId.indexOf('bot_') === 0) {
+        botPlay(currentGame.turnPlayerId);
       }
-    }, 5000);
+    }, 1000);
   } catch(e) { console.error('startGame error:', e); notify('❌ ผิดพลาด: ' + e.message); }
 }
 
@@ -352,82 +469,140 @@ async function drawCard() {
   try {
     if (!currentGame || !myTurn || currentGame.phase !== 'draw') return;
     var deck = currentGame.deck.slice();
-    if (deck.length === 0) { notify('กองจั่วหมดแล้ว!'); return; }
-    var drawnCode = deck.pop();        // deck stores string codes, not card objects
-    var drawnCard = codeToCard(drawnCode);  // convert to card object for display
-    var newHands = Object.assign({}, currentGame.hands);
-    newHands[myPlayerId] = (newHands[myPlayerId] || []).concat([drawnCode]);  // store string code
-    var updatedGame = Object.assign({}, currentGame, { deck: deck, hands: newHands, phase: 'action', turnStartTime: Date.now() });
-    currentGame = updatedGame;
-    await db.from('rooms').update({ game: updatedGame }).eq('id', roomCode);
-    // Update local hand display immediately
-    var myHandDiv = document.getElementById('your-hand');
-    if (myHandDiv) {
-      var sorted = sortHand(codesToCards(newHands[myPlayerId] || []));
-      var html = '';
-      for (var hi = 0; hi < sorted.length; hi++) {
-        var card = sorted[hi];
-        var cls = handCardClass(card);
-        html += '<div class="hand-card ' + cls + '" onclick="toggleSelect(\'' + card.code + '\')">' +
-          '<span class="cr">' + (card.rank) + '</span>' +
-          '<span class="cs">' + (card.suit) + '</span></div>';
-      }
-      myHandDiv.innerHTML = html;
+    if (deck.length === 0) {
+      // Deck empty: skip draw, go directly to action
+      currentGame = Object.assign({}, currentGame, { phase: 'action', deckEmpty: true, turnStartTime: Date.now() });
+      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+      renderGame(currentGame);
+      notify('📦 กองจั่วหมดแล้ว! ทิ้งไพ่ได้เลย');
+      return;
     }
+    var drawnCode = deck.pop();
+    var drawnCard = codeToCard(drawnCode);
+    var newHands = Object.assign({}, currentGame.hands);
+    newHands[myPlayerId] = (newHands[myPlayerId] || []).concat([drawnCode]);
+    pendingPickedCodes = [];
+    currentGame = Object.assign({}, currentGame, {
+      deck: deck,
+      hands: newHands,
+      phase: 'action',
+      turnStartTime: Date.now()
+    });
+    await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+    renderYourHand();
     updateActionBtns();
-    renderDiscardPile(currentGame);  // Update discard pile
     notify('📦 จั่วได้: ' + (drawnCard ? drawnCard.rank + drawnCard.suit : drawnCode));
   } catch(e) { console.error('drawCard error:', e); }
 }
 
-async function pickDiscard() {
+// Pick card from discard pile by index
+// Card at index i → player gets discard[i..last] into hand
+// MUST meld immediately with at least one of the picked cards
+async function pickFromDiscard(idx) {
   try {
-    if (!currentGame || !myTurn || currentGame.phase !== 'draw') return;
+    if (!currentGame || !myTurn) return;
+    if (currentGame.phase !== 'draw') { notify('ต้องจั่วหรือหยิบจากกองทิ้งก่อน!'); return; }
     var discard = currentGame.discardPile.slice();
-    if (discard.length === 0) return;
-    var top = discard.pop();
-    var newHands = Object.assign({}, currentGame.hands);
-    var pickedCard = codeToCard(top); newHands[myPlayerId] = (newHands[myPlayerId] || []).concat([pickedCard ? pickedCard.code : top]);
-    currentGame = Object.assign({}, currentGame, { hands: newHands, discardPile: discard, phase: 'action', turnStartTime: Date.now() });
-    await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-    // Update local hand display immediately
-    var myHandDiv2 = document.getElementById('your-hand');
-    if (myHandDiv2) {
-      var sorted2 = sortHand(codesToCards(newHands[myPlayerId] || []));
-      var html2 = '';
-      for (var hi2 = 0; hi2 < sorted2.length; hi2++) {
-        var card2 = sorted2[hi2];
-        var cls2 = handCardClass(card2);
-        html2 += '<div class="hand-card ' + cls2 + '" onclick="toggleSelect(\'' + card2.code + '\')">' +
-          '<span class="cr">' + (card2.rank) + '</span>' +
-          '<span class="cs">' + (card2.suit) + '</span></div>';
-      }
-      myHandDiv2.innerHTML = html2;
+    if (discard.length === 0 || idx < 0 || idx >= discard.length) return;
+
+    var taken = discard.slice(idx);       // [card_i, card_i+1, ..., card_last]
+    var remaining = discard.slice(0, idx); // [card_0, ..., card_i-1]
+
+    // Check if picked cards can form a valid meld with current hand
+    var handCodes = currentGame.hands[myPlayerId] || [];
+    var meldable = canMeldWithPicked(taken, handCodes);
+
+    if (!meldable) {
+      notify('❌ หยิบใบนี้ต้องเกิดได้ทันที! ลองใบอื่น');
+      return;
     }
-    updateActionBtns();
-    var topCard = codeToCard(top);
-    notify('🗑️ หยิบ: ' + (topCard ? topCard.rank + topCard.suit : top));
-  } catch(e) { console.error('pickDiscard error:', e); }
+
+    // Store picked codes for mandatory meld check
+    pendingPickedCodes = taken;
+
+    // Track who discarded the card we're picking (for ทิ้งมี่ penalty)
+    var pickedCardCode = discard[idx];
+    var discardOwner = currentGame.lastDiscard ? currentGame.lastDiscard.playerId : null;
+    var discardCard = currentGame.lastDiscard ? currentGame.lastDiscard.cardCode : null;
+
+    var newHands = Object.assign({}, currentGame.hands);
+    newHands[myPlayerId] = handCodes.concat(taken);
+    var newPicked = Object.assign({}, currentGame.pickedFromDiscard || {});
+    newPicked[myPlayerId] = taken;
+
+    currentGame = Object.assign({}, currentGame, {
+      hands: newHands,
+      discardPile: remaining,
+      phase: 'action',
+      turnStartTime: Date.now(),
+      pickedFromDiscard: newPicked,
+      lastDiscard: null  // clear after pickup
+    });
+    await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+
+    // Show meld modal immediately - player MUST meld with picked cards
+    openMeldModal(taken);
+    notify('🗑️ หยิบได้แล้ว! ต้องเกิดใบที่หยิบทันที');
+  } catch(e) { console.error('pickFromDiscard error:', e); }
 }
 
 async function discardSelected() {
   try {
-    if (!currentGame || !myTurn || selectedCards.length !== 1) { notify('เลือกไพ่ 1 ใบที่จะทิ้ง'); return; }
-    var card = selectedCards[0];
-    var hand = (currentGame.hands[myPlayerId] || []).slice();
-    var newHand = hand.filter(function(c) { return c !== card; });
-    var cardToDiscard = null;
-    var allCards = codesToCards((currentGame.hands[myPlayerId] || []));
-    for (var fi = 0; fi < allCards.length; fi++) {
-      if (allCards[fi].code === card) { cardToDiscard = allCards[fi]; break; }
+    if (!currentGame || !myTurn) return;
+    if (currentGame.phase === 'action' && pendingPickedCodes.length > 0) {
+      notify('❌ ต้องเกิดใบที่หยิบจากกองทิ้งก่อนทิ้ง!');
+      return;
     }
-    if (!cardToDiscard) return;
-    var newDiscard = currentGame.discardPile.concat([cardToDiscard]);
+    if (selectedCards.length !== 1) { notify('เลือกไพ่ 1 ใบที่จะทิ้ง'); return; }
+    var cardCode = selectedCards[0];
+    var handCodes = currentGame.hands[myPlayerId] || [];
+
+    // Verify card is in hand (not from picked discard)
+    if (handCodes.indexOf(cardCode) === -1) {
+      notify('❌ ไม่สามารถทิ้งไพ่ที่หยิบจากกองทิ้งมาได้');
+      return;
+    }
+
+    var card = codeToCard(cardCode);
+    var newHand = handCodes.filter(function(c){ return c !== cardCode; });
+
+    // Check speto discard penalty
+    var spetoDiscardPenalty = 0;
+    if (isSpeto(card)) {
+      spetoDiscardPenalty = -100;
+    }
+
+    // If discard penalty applies, apply it now
+    if (spetoDiscardPenalty !== 0 || cardCode === '2♣' || cardCode === 'Q♠') {
+      // ทิ้งสเปโต penalty
+      var scores = Object.assign({}, currentGame.scores || {});
+      scores[myPlayerId] = (scores[myPlayerId] || 0) + spetoDiscardPenalty;
+      currentGame = Object.assign({}, currentGame, { scores: scores });
+    }
+
     selectedCards = [];
-    if (newHand.length === 0) { await handleKnockout(myPlayerId); return; }
+    pendingPickedCodes = [];
+
+    if (newHand.length === 0) {
+      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+      await handleKnockout(myPlayerId);
+      return;
+    }
+
+    var newDiscard = currentGame.discardPile.concat([cardCode]);
     var newHands = Object.assign({}, currentGame.hands);
     newHands[myPlayerId] = newHand;
-    currentGame = Object.assign({}, currentGame, { hands: newHands, discardPile: newDiscard, phase: 'draw' });
+
+    // Record this discard for ทิ้งมี่ tracking
+    var newLastDiscard = { playerId: myPlayerId, cardCode: cardCode };
+
+    currentGame = Object.assign({}, currentGame, {
+      hands: newHands,
+      discardPile: newDiscard,
+      phase: 'draw',
+      turnStartTime: Date.now(),
+      lastDiscard: newLastDiscard
+    });
     await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
     await advanceTurn();
   } catch(e) { console.error('discardSelected error:', e); }
@@ -439,22 +614,28 @@ async function advanceTurn() {
     var idx = order.indexOf(currentGame.turnPlayerId);
     var nextIdx = (idx + 1) % order.length;
     var nextPid = order[nextIdx];
-    var updatedGame = Object.assign({}, currentGame, { turnPlayerId: nextPid, phase: 'draw', turnStartTime: Date.now() });
+    var updatedGame = Object.assign({}, currentGame, {
+      turnPlayerId: nextPid,
+      phase: 'draw',
+      turnStartTime: Date.now()
+    });
     currentGame = updatedGame;
     await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-    // Force local render since postgres_changes won't fire for our own client
     renderGame(currentGame);
     var _data = await db.from('rooms').select('players').eq('id', roomCode).single();
     var nextPlayer = _data.data && _data.data.players ? _data.data.players[nextPid] : null;
-    console.log('[Turn] nextPid:', nextPid, 'isBot:', nextPlayer ? nextPlayer.isBot : 'unknown', 'name:', nextPlayer ? nextPlayer.name : '??');
-    if (nextPlayer && nextPlayer.isBot) { console.log('[Bot] Scheduling bot', nextPid, 'to play in 800ms'); setTimeout(function() { botPlay(nextPid); }, 800); }
+    if (nextPlayer && nextPlayer.isBot) {
+      console.log('[Bot] Starting bot', nextPid);
+      botPlay(nextPid);
+    }
   } catch(e) { console.error('advanceTurn error:', e); }
 }
 
 async function endTurn() {
   try {
     if (!currentGame || !myTurn) return;
-    if (currentGame.phase === 'draw') { notify('ต้องจั่วหรือหยิบก่อน!'); return; }
+    if (currentGame.phase === 'draw') { notify('ต้องจั่วหรือหยิบจากกองทิ้งก่อน!'); return; }
+    if (pendingPickedCodes.length > 0) { notify('❌ ต้องเกิดใบที่หยิบจากกองทิ้งก่อน!'); return; }
     await advanceTurn();
   } catch(e) { console.error('endTurn error:', e); }
 }
@@ -469,12 +650,8 @@ async function handleKnockout(koId) {
     var allCodes = {};
     for (var di = 0; di < allDeck.length; di++) allCodes[allDeck[di].code] = allDeck[di];
 
-    // --- Calculate round scores per player ---
-    // Score = (meld points on table) - (remaining hand points)
-    // If unmeld (never melded): hand points x2 as negative
     var roundScores = {};
     for (var pid in game.hands) {
-      // Meld points
       var meldPts = 0;
       var melds = game.melds && game.melds[pid] ? game.melds[pid] : [];
       for (var mi = 0; mi < melds.length; mi++) {
@@ -484,27 +661,26 @@ async function handleKnockout(koId) {
           if (c) meldPts += cardPoints(c);
         }
       }
-      // Remaining hand points
       var handPts = 0;
       var handCodes = game.hands[pid] || [];
-      for (var ci = 0; ci < handCodes.length; ci++) {
-        var c = codeToCard(handCodes[ci]);
-        if (c) handPts += cardPoints(c);
+      for (var ci2 = 0; ci2 < handCodes.length; ci2++) {
+        var c2 = codeToCard(handCodes[ci2]);
+        if (c2) handPts += cardPoints(c2);
       }
-      // Knocker's hand is empty (they knocked), score = 0 for remaining
-      if (pid === koId) handPts = 0;
-      // Unmeld penalty: if never melded, hand points x2
+      if (pid === koId) handPts = 0; // knocker's hand is empty
+
       var hasMeld = game.hasFirstMeld && game.hasFirstMeld[pid];
       if (!hasMeld && pid !== koId) handPts = handPts * 2;  // unmeld: double penalty
+
       roundScores[pid] = meldPts - handPts;
     }
 
-    // Knocker gets knock bonus: +50 (normal knock) or +100 (dark knock)
+    // Knock bonus
     var hasMeldBeforeKnock = game.hasFirstMeld && game.hasFirstMeld[koId];
     var knockBonus = hasMeldBeforeKnock ? 50 : 100;  // +100 if dark knock
     roundScores[koId] += knockBonus;
 
-    // Head card bonus for knocker
+    // Head card bonus
     if (game.headPoints) roundScores[koId] += game.headPoints;
 
     // Cumulative scores
@@ -530,6 +706,15 @@ async function handleKnockout(koId) {
   } catch(e) { console.error('handleKnockout error:', e); }
 }
 
+// Check if deck is empty and trigger end game
+async function checkDeckEmpty() {
+  if (!currentGame || currentGame.deck.length > 0) return;
+  if (currentGame.deckEmpty) return;  // already flagged
+  currentGame = Object.assign({}, currentGame, { deckEmpty: true });
+  await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+  notify('⚠️ กองจั่วหมดแล้ว! รอบสุดท้าย — ใครทิ้งเร็วที่สุดชนะ!');
+}
+
 // --- BOT ---
 async function botPlay(botId) {
   try {
@@ -538,157 +723,247 @@ async function botPlay(botId) {
     if (currentGame.turnPlayerId !== botId) return;
     await delay(600);
 
-    // DRAW phase
-    var hand = codesToCards(currentGame.hands[botId] || []);
-    var deck = currentGame.deck.slice();
-    if (deck.length > 0) {
-      var drawn = deck.pop();
-      hand = sortHand(hand.concat([drawn]));
-      var newHands = Object.assign({}, currentGame.hands);
-      newHands[botId] = hand.map(function(c) { return c.code; });
-      currentGame = Object.assign({}, currentGame, { deck: deck, hands: newHands, phase: 'action', turnStartTime: Date.now() });
-      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-      renderGame(currentGame);
-      await delay(600);
+    var handCodes = currentGame.hands[botId] || [];
+    var hand = codesToCards(handCodes);
+
+    // DRAW phase: prefer pick from discard if can meld
+    if (currentGame.discardPile && currentGame.discardPile.length > 0) {
+      // Try each discard position from top to bottom
+      var discard = currentGame.discardPile;
+      var picked = false;
+      for (var di = discard.length - 1; di >= 0; di--) {
+        var taken = discard.slice(di);
+        var meldable = canMeldWithPicked(taken, handCodes);
+        if (meldable) {
+          // Bot picks from discard
+          var takenCards = discard.slice(di);
+          var remaining = discard.slice(0, di);
+          var newHandCodes = handCodes.concat(takenCards);
+          var newPicked = Object.assign({}, currentGame.pickedFromDiscard || {});
+          newPicked[botId] = takenCards;
+
+          // Apply ทิ้งมี่ penalty to previous discarder if any
+          var discardOwner = currentGame.lastDiscard ? currentGame.lastDiscard.playerId : null;
+          if (discardOwner && discardOwner !== botId) {
+            var scores = Object.assign({}, currentGame.scores || {});
+            scores[discardOwner] = (scores[discardOwner] || 0) - 100;
+            currentGame = Object.assign({}, currentGame, { scores: scores });
+          }
+
+          currentGame = Object.assign({}, currentGame, {
+            hands: Object.assign({}, currentGame.hands, { [botId]: newHandCodes }),
+            discardPile: remaining,
+            phase: 'action',
+            turnStartTime: Date.now(),
+            pickedFromDiscard: newPicked,
+            lastDiscard: null
+          });
+          await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+          renderGame(currentGame);
+          hand = codesToCards(newHandCodes);
+          picked = true;
+          console.log('[Bot] Picked from discard, forced to meld');
+          break;
+        }
+      }
     }
 
-    // ACTION phase: try to meld
+    // If deck available and couldn't pick from discard, draw
+    if (!picked && currentGame.deck.length > 0) {
+      var deck = currentGame.deck.slice();
+      var drawn = deck.pop();
+      hand = sortHand(hand.concat([codeToCard(drawn)]));
+      var newHands = Object.assign({}, currentGame.hands);
+      newHands[botId] = hand.map(function(c){ return c.code; });
+      currentGame = Object.assign({}, currentGame, {
+        deck: deck,
+        hands: newHands,
+        phase: 'action',
+        turnStartTime: Date.now()
+      });
+      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+      renderGame(currentGame);
+      await delay(400);
+    } else if (!picked) {
+      // Deck empty, no discard pickup possible
+      currentGame = Object.assign({}, currentGame, { phase: 'action', deckEmpty: true });
+      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+    }
+
+    // ACTION phase: try to meld (first meld required)
     var hasFirstMeld = currentGame.hasFirstMeld && currentGame.hasFirstMeld[botId];
     if (!hasFirstMeld) {
-      // Try to find a valid meld
       var validMelds = findMelds(hand);
       if (validMelds.length > 0) {
-        var meld = validMelds[0];  // Take first valid meld
-        var meldCodes = meld.cards.map(function(c) { return c.code; });
-        var newHand2 = hand.filter(function(c) { return meldCodes.indexOf(c.code) === -1; });
+        var meld = validMelds[0];
+        var meldCodes = meld.cards.map(function(c){ return c.code; });
+        var newHand = hand.filter(function(c){ return meldCodes.indexOf(c.code) === -1; });
         var newMelds = Object.assign({}, currentGame.melds || {});
         newMelds[botId] = (newMelds[botId] || []).concat([meldCodes]);
         var newHasMeld = Object.assign({}, currentGame.hasFirstMeld || {});
         newHasMeld[botId] = true;
         var newHands2 = Object.assign({}, currentGame.hands);
-        newHands2[botId] = newHand2.map(function(c) { return c.code; });
-        currentGame = Object.assign({}, currentGame, { hands: newHands2, melds: newMelds, hasFirstMeld: newHasMeld });
+        newHands2[botId] = newHand.map(function(c){ return c.code; });
+        currentGame = Object.assign({}, currentGame, {
+          hands: newHands2,
+          melds: newMelds,
+          hasFirstMeld: newHasMeld
+        });
         await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
         renderGame(currentGame);
-        await delay(600);
-        hand = newHand2;
+        hand = newHand;
+        await delay(400);
+      }
+    } else {
+      // Already melded: try layoff
+      var layoffMelds = findMelds(hand);
+      if (layoffMelds.length > 0) {
+        var meld = layoffMelds[0];
+        var meldCodes = meld.cards.map(function(c){ return c.code; });
+        var newHand = hand.filter(function(c){ return meldCodes.indexOf(c.code) === -1; });
+        var newMelds = Object.assign({}, currentGame.melds || {});
+        newMelds[botId] = (newMelds[botId] || []).concat([meldCodes]);
+        var newHands2 = Object.assign({}, currentGame.hands);
+        newHands2[botId] = newHand.map(function(c){ return c.code; });
+        currentGame = Object.assign({}, currentGame, { hands: newHands2, melds: newMelds });
+        await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+        renderGame(currentGame);
+        hand = newHand;
+        await delay(400);
       }
     }
 
-    // DISCARD phase
+    // DISCARD phase: must discard from hand only (not picked)
     if (hand.length > 0) {
-      // Pick a safe card to discard (not a potential meld card)
-      var discard = hand[hand.length - 1];
-      // Simple strategy: discard last card in sorted hand
-      var newHand = hand.filter(function(c) { return c.code !== discard.code; });
-      var newDiscard = currentGame.discardPile.concat([discard]);
+      var pickedCodes = (currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[botId]) || [];
+      // Filter: can only discard cards that are in original hand (not picked)
+      var canDiscard = hand.filter(function(c){ return pickedCodes.indexOf(c.code) === -1; });
+      if (canDiscard.length === 0) canDiscard = hand; // fallback to any card
+
+      // Prefer discarding speto if we must
+      var spetoCards = canDiscard.filter(function(c){ return isSpeto(c); });
+      var discardCard = spetoCards.length > 0 ? spetoCards[0] : canDiscard[canDiscard.length - 1];
+
+      var newHand = hand.filter(function(c){ return c.code !== discardCard.code; });
+      var newDiscard = currentGame.discardPile.concat([discardCard.code]);
+      var newLastDiscard = { playerId: botId, cardCode: discardCard.code };
+
+      // Clear pickedFromDiscard for this bot
+      var newPicked = Object.assign({}, currentGame.pickedFromDiscard || {});
+      delete newPicked[botId];
+
       if (newHand.length === 0) {
-        // KNOCK!
         var finalHands = Object.assign({}, currentGame.hands);
         finalHands[botId] = [];
-        await db.from('rooms').update({ game: Object.assign({}, currentGame, { hands: finalHands, discardPile: newDiscard }) }).eq('id', roomCode);
+        await db.from('rooms').update({
+          game: Object.assign({}, currentGame, { hands: finalHands, discardPile: newDiscard, pickedFromDiscard: newPicked, lastDiscard: newLastDiscard })
+        }).eq('id', roomCode);
         renderGame(currentGame);
-        await handleKnockout(botId); return;
+        await handleKnockout(botId);
+        return;
       }
+
       var newHands3 = Object.assign({}, currentGame.hands);
-      newHands3[botId] = newHand.map(function(c) { return c.code; });
-      currentGame = Object.assign({}, currentGame, { hands: newHands3, discardPile: newDiscard, phase: 'draw' });
+      newHands3[botId] = newHand.map(function(c){ return c.code; });
+      currentGame = Object.assign({}, currentGame, {
+        hands: newHands3,
+        discardPile: newDiscard,
+        phase: 'draw',
+        turnStartTime: Date.now(),
+        pickedFromDiscard: newPicked,
+        lastDiscard: newLastDiscard
+      });
       await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
       renderGame(currentGame);
-      renderDiscardPile(currentGame);
-      await delay(500);
+      await delay(300);
     }
     await advanceTurn();
   } catch(e) { console.error('botPlay error:', e); }
 }
 
 // --- MELD ---
-function findMelds(hand) {
-  var normals = hand.filter(function(c) { return !c.isSpeto; });
-  var jokers = []; // No jokers in standard Dummy Rummy
-  var melds = [];
-  var byRank = {};
-  for (var ni = 0; ni < normals.length; ni++) {
-    var nc = normals[ni];
-    if (!byRank[nc.rank]) byRank[nc.rank] = [];
-    byRank[nc.rank].push(nc);
-  }
-  for (var r in byRank) { if (byRank[r].length >= 3) melds.push({ type: 'set', cards: byRank[r].slice() }); }
-  for (var r2 in byRank) {
-    if (byRank[r2].length === 2 && jokers.length > 0) {
-      melds.push({ type: 'set', cards: byRank[r2].concat([jokers.shift()]), jokerUsed: true });
-    }
-  }
-  var bySuit = {};
-  for (var si = 0; si < normals.length; si++) {
-    var ns = normals[si].suit;
-    if (!bySuit[ns]) bySuit[ns] = [];
-    bySuit[ns].push(normals[si]);
-  }
-  var rOrd = {'A':1,'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'10':10,'J':11,'Q':12,'K':13};
-  for (var suit in bySuit) {
-    var sc = bySuit[suit].slice().sort(function(a, b) { return (rOrd[a.rank] || 14) - (rOrd[b.rank] || 14); });
-    var run = [];
-    for (var sci = 0; sci < sc.length; sci++) {
-      var cur = rOrd[sc[sci].rank] || 14;
-      var prev = run.length ? rOrd[run[run.length - 1].rank] : null;
-      if (prev !== null && cur === prev + 1) { run.push(sc[sci]); }
-      else {
-        if (run.length >= 3) melds.push({ type: 'run', cards: run.slice(), suit: suit });
-        run = [sc[sci]];
-      }
-    }
-    if (run.length >= 3) melds.push({ type: 'run', cards: run.slice(), suit: suit });
-  }
-  return melds;
-}
-
-function openMeldModal() {
+function openMeldModal(pickedCodes) {
   if (!currentGame) return;
   selectedMeldIndex = null;
   try {
     document.getElementById('meld-modal').classList.add('active');
-    renderMeldOptions();
+    renderMeldOptions(pickedCodes || []);
     document.getElementById('btn-confirm-meld').disabled = true;
   } catch(e) { console.error('openMeldModal error:', e); }
 }
 
 function closeMeldModal() {
   try { document.getElementById('meld-modal').classList.remove('active'); } catch(e) {}
+  // If player closes without melding after picking from discard, force re-pick
+  if (pendingPickedCodes.length > 0) {
+    notify('❌ ต้องเกิดใบที่หยิบจากกองทิ้ง! กดปุ่ม 🃏 เกิด');
+    openMeldModal(pendingPickedCodes);
+  }
 }
 
-function renderCardSmall(card) {
-  if (!card) return '';
-  var cls = handCardClass(card);
-  var rank = card.rank;
-  var suit = card.suit;
-  return '<div class="ms-card ' + cls + '">' + rank + '<br>' + suit + '</div>';
-}
-
-function renderMeldOptions() {
+function renderMeldOptions(pickedCodes) {
   try {
     var handCodes = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
     var hand = codesToCards(handCodes);
     var melds = findMelds(hand);
+
+    // If picked from discard, filter to only melds using picked cards
+    if (pickedCodes && pickedCodes.length > 0) {
+      melds = melds.filter(function(m) {
+        return m.cards.some(function(c){ return pickedCodes.indexOf(c.code) >= 0; });
+      });
+    }
+
     var container = document.getElementById('meld-section');
     if (melds.length === 0) {
       container.innerHTML = '<div style="color:#aaa;text-align:center;padding:20px">ไม่พบชุดไพ่ที่เกิดได้<br><small>ต้องมีไพ่ 3 ใบขึ้นไป ดอกเดียวกัน (ตอง) หรือเรียงกัน 3 ใบขึ้นไป (เรียง)</small></div>';
+      if (pickedCodes && pickedCodes.length > 0) {
+        container.innerHTML += '<div style="color:#e94560;text-align:center;padding:10px">⚠️ หยิบจากกองทิ้งมาแล้วต้องเกิด!<br><small>เลือกชุดที่ใช้ใบที่หยิบ</small></div>';
+      }
       return;
     }
+
     var html = '<div style="color:#aaa;font-size:0.9rem;margin-bottom:12px;text-align:center">เลือกชุดไพ่ที่จะเกิด:</div><div class="meld-sets">';
     for (var mi = 0; mi < melds.length; mi++) {
       var meld = melds[mi];
       var cardsHtml = '';
-      for (var ci = 0; ci < meld.cards.length; ci++) cardsHtml += renderCardSmall(meld.cards[ci]);
-      html += '<div class="meld-set" onclick="selectMeld(' + mi + ')">' + cardsHtml + '<div style="width:100%;font-size:0.7rem;color:#888;text-align:center;margin-top:4px">' + (meld.type === 'set' ? 'ตอง' : 'เรียง') + '</div></div>';
+      for (var ci = 0; ci < meld.cards.length; ci++) {
+        var c = meld.cards[ci];
+        var highlighted = pickedCodes && pickedCodes.indexOf(c.code) >= 0;
+        cardsHtml += '<div class="ms-card ' + handCardClass(c) + '" style="' + (highlighted ? 'border:2px solid #ffd700;box-shadow:0 0 8px rgba(255,215,0,0.6)' : '') + '">' + c.rank + '<br>' + c.suit + '</div>';
+      }
+      html += '<div class="meld-set" onclick="selectMeld(' + mi + ', ' + JSON.stringify(pickedCodes || []).replace(/"/g, '&quot;') + ')">' + cardsHtml + '<div style="width:100%;font-size:0.7rem;color:#888;text-align:center;margin-top:4px">' + (meld.type === 'set' ? 'ตอง' : 'เรียง') + '</div></div>';
     }
     html += '</div>';
+    if (pickedCodes && pickedCodes.length > 0) {
+      html += '<div style="color:#ffd700;font-size:0.85rem;text-align:center;margin-top:10px">✨ ต้องเลือกชุดที่ใช้ใบที่หยิบ</div>';
+    }
     container.innerHTML = html;
   } catch(e) { console.error('renderMeldOptions error:', e); }
 }
 
-function selectMeld(idx) {
+function selectMeld(idx, pickedCodes) {
   selectedMeldIndex = idx;
+  var handCodes = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
+  var hand = codesToCards(handCodes);
+  var melds = findMelds(hand);
+  if (pickedCodes && pickedCodes.length > 0) {
+    melds = melds.filter(function(m) {
+      return m.cards.some(function(c){ return pickedCodes.indexOf(c.code) >= 0; });
+    });
+  }
+  var meld = melds[idx];
+  if (!meld) return;
+
+  // Validate: picked cards must be in this meld
+  if (pickedCodes && pickedCodes.length > 0) {
+    var usesPicked = meld.cards.some(function(c){ return pickedCodes.indexOf(c.code) >= 0; });
+    if (!usesPicked) {
+      notify('❌ ต้องใช้ใบที่หยิบจากกองทิ้งในชุดนี้!');
+      return;
+    }
+  }
+
   try {
     var sets = document.querySelectorAll('.meld-set');
     for (var si = 0; si < sets.length; si++) {
@@ -696,36 +971,47 @@ function selectMeld(idx) {
       sets[si].style.boxShadow = si === idx ? '0 0 12px rgba(255,215,0,0.5)' : 'none';
     }
     document.getElementById('btn-confirm-meld').disabled = false;
+    // Store selected meld for confirm
+    window._selectedMeld = meld;
   } catch(e) {}
 }
 
 async function confirmMeld() {
   try {
-    if (selectedMeldIndex === null) return;
-    var handCodes = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
-    var hand = codesToCards(handCodes);
-    var melds = findMelds(hand);
-    var meld = melds[selectedMeldIndex];
+    var meld = window._selectedMeld;
     if (!meld) return;
-    var meldedCodes = meld.cards.map(function(c) { return c.code; });
-    var newHandCodes = handCodes.filter(function(c) { return meldedCodes.indexOf(c) === -1; });
+    var handCodes = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
+    var meldedCodes = meld.cards.map(function(c){ return c.code; });
+    var newHandCodes = handCodes.filter(function(c){ return meldedCodes.indexOf(c) === -1; });
     var allMelds = (currentGame.melds && currentGame.melds[myPlayerId] ? currentGame.melds[myPlayerId] : []).concat([meldedCodes]);
     var newMelds = Object.assign({}, currentGame.melds || {});
     newMelds[myPlayerId] = allMelds;
-    var newHands = Object.assign({}, currentGame.hands);
-    newHands[myPlayerId] = newHandCodes;
     var newHasFirstMeld = Object.assign({}, currentGame.hasFirstMeld || {});
-    if (!newHasFirstMeld[myPlayerId]) {
-      newHasFirstMeld[myPlayerId] = true;
-      notify('🎉 เกิดสำเร็จ! ต่อไปสามารถฝากไพ่ได้!');
-    }
-    currentGame = Object.assign({}, currentGame, { hands: newHands, melds: newMelds, hasFirstMeld: newHasFirstMeld });
+    var isFirstMeld = !newHasFirstMeld[myPlayerId];
+    if (isFirstMeld) newHasFirstMeld[myPlayerId] = true;
+
+    var newPicked = Object.assign({}, currentGame.pickedFromDiscard || {});
+    delete newPicked[myPlayerId];
+    pendingPickedCodes = [];
+
+    currentGame = Object.assign({}, currentGame, {
+      hands: Object.assign({}, currentGame.hands, { [myPlayerId]: newHandCodes }),
+      melds: newMelds,
+      hasFirstMeld: newHasFirstMeld,
+      pickedFromDiscard: newPicked
+    });
     await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-    notify('🃏 เกิด ' + (meld.type === 'set' ? 'ตอง' : 'เรียง') + ' สำเร็จ!');
+
+    if (isFirstMeld) {
+      notify('🎉 เกิดสำเร็จ! ต่อไปสามารถฝากไพ่ได้!');
+    } else {
+      notify('🃏 เกิด ' + (meld.type === 'set' ? 'ตอง' : 'เรียง') + ' สำเร็จ!');
+    }
     closeMeldModal();
     renderYourHand();
-    renderScoreboard(currentGame);
     renderPlayerMeldRow();
+    renderScoreboard(currentGame);
+    updateActionBtns();
   } catch(e) { console.error('confirmMeld error:', e); }
 }
 
@@ -739,7 +1025,7 @@ async function renderLobby(players) {
     for (var ai = 0; ai < arr.length; ai++) {
       var p = arr[ai];
       var isYou = p.id === myPlayerId;
-      html += '<div class="player-slot ' + (isYou ? 'you' : '') + ' ' + (p.isBot ? '' : '') + '">' +
+      html += '<div class="player-slot ' + (isYou ? 'you' : '') + '">' +
         '<div class="pemoji">' + (p.isBot ? '🤖' : '👤') + '</div>' +
         '<div class="pname">' + p.name + '</div>' +
         '<div class="ptype">' + (isYou ? '(คุณ)' : p.isBot ? 'AI' : 'ผู้เล่น') + '</div></div>';
@@ -748,7 +1034,7 @@ async function renderLobby(players) {
       html += '<div class="player-slot"><div class="pemoji">❓</div><div class="pname">รอผู้เล่น...</div><div class="ptype">เหลือ ' + (4 - ei) + ' คน</div></div>';
     }
     list.innerHTML = html;
-    var humanCount = arr.filter(function(p) { return !p.isBot; }).length;
+    var humanCount = arr.filter(function(p){ return !p.isBot; }).length;
     btnStart.style.display = humanCount >= 1 ? 'block' : 'none';
   } catch(e) { console.error('renderLobby error:', e); }
 }
@@ -756,14 +1042,15 @@ async function renderLobby(players) {
 async function renderGame(game) {
   try {
     if (!game) return;
-    turnPlayerId = game.turnPlayerId;
+    window._currentGame = game; // backup for polling
+    var turnPlayerId = game.turnPlayerId;
     myTurn = turnPlayerId === myPlayerId;
     var ti = document.getElementById('turn-indicator');
     if (ti) ti.textContent = myTurn ? '🎯 ตาของคุณ!' : '⏳ รอตาคนอื่น...';
     var ri = document.getElementById('round-info');
     if (ri) ri.textContent = 'รอบ: ' + (game.round || 1) + ' | ทิ้ง: ' + (game.discardPile ? game.discardPile.length : 0);
     var dc = document.getElementById('deck-count');
-    if (dc) dc.textContent = (game.deck ? game.deck.length : 0) + ' ใบ';
+    if (dc) dc.textContent = (game.deck ? game.deck.length : 0) + ' ใบ' + (game.deckEmpty ? ' 🔻หมด' : '');
     var yn = document.getElementById('your-name');
     if (yn) yn.textContent = myName;
     await renderOpponents(game);
@@ -780,41 +1067,16 @@ async function renderOpponents(game) {
     var _data = await db.from('rooms').select('players').eq('id', roomCode).single();
     var players = (_data.data && _data.data.players) || {};
     var order = game.playerOrder || [];
-    var myIdx = order.indexOf(myPlayerId);
-
-    // Split opponents: those after me go top, those before go bottom
-    var opponents = [];
-    for (var oi = 0; oi < order.length; oi++) {
-      if (order[oi] !== myPlayerId) opponents.push(order[oi]);
-    }
-
-    // Top row: opponents in order starting from myIdx+1
-    var top = [];
-    var bottom = [];
-    if (opponents.length >= 1) top.push(opponents[0]);
-    if (opponents.length >= 2) top.push(opponents[1]);
-    if (opponents.length >= 3) bottom.push(opponents[2]);
-    // Pad bottom to 2 slots
-    while (bottom.length < 1) bottom.push(null);
+    var opponents = order.filter(function(pid){ return pid !== myPlayerId; });
+    var top = opponents.slice(0, 2);
     while (top.length < 2) top.push(null);
-
-    var topHtml = '';
-    for (var ti = 0; ti < 2; ti++) {
-      topHtml += opponentCardHtml(top[ti], game, players);
-    }
-    var botHtml = '';
-    for (var bi = 0; bi < 1; bi++) {
-      botHtml += opponentCardHtml(bottom[bi], game, players);
-    }
-    // If 4 players total, bottom row needs 2
-    if (opponents.length >= 3) {
-      botHtml = opponentCardHtml(bottom[0], game, players) + opponentCardHtml(null, game, players);
-    }
+    var bot = opponents.slice(2, 3);
+    while (bot.length < 1) bot.push(null);
 
     var topRow = document.getElementById('row-opponents-top');
     var botRow = document.getElementById('row-opponents-bottom');
-    if (topRow) topRow.innerHTML = topHtml;
-    if (botRow) botRow.innerHTML = botHtml;
+    if (topRow) topRow.innerHTML = top.map(function(pid){ return opponentCardHtml(pid, game, players); }).join('');
+    if (botRow) botRow.innerHTML = bot.map(function(pid){ return opponentCardHtml(pid, game, players); }).join('');
   } catch(e) { console.error('renderOpponents error:', e); }
 }
 
@@ -828,9 +1090,16 @@ function opponentCardHtml(pid, game, players) {
   var melds = game.melds && game.melds[pid] ? game.melds[pid] : [];
   var meldChips = '';
   for (var mi = 0; mi < melds.length; mi++) {
-    meldChips += '<div class="meld-chip">🃏 ' + (melds[mi].type || 'ตอง') + '</div>';
+    var meldCodes = Array.isArray(melds[mi]) ? melds[mi] : (melds[mi].cards || []);
+    var meldName = detectMeldType(meldCodes);
+    var cardsHtml = '';
+    for (var ci = 0; ci < meldCodes.length; ci++) {
+      var c = codeToCard(meldCodes[ci]);
+      if (c) cardsHtml += '<div class="mini-card ' + handCardClass(c) + '" style="width:22px;height:30px;font-size:0.5rem;gap:0;flex-shrink:0">' + c.rank + '<br>' + c.suit + '</div>';
+    }
+    meldChips += '<div class="meld-chip" style="display:flex;align-items:center;gap:2px;flex-wrap:nowrap;overflow:hidden">' + cardsHtml + ' <span style="font-size:0.6rem;white-space:nowrap"> ' + meldName + '</span></div>';
   }
-  var activeLabel = isActive ? '<span class="oactive">▶ ตาคนนี้</span>' : '';
+  var activeLabel = isActive ? '<span class="oactive">▶ ตาคนี้</span>' : '';
   return '<div class="opponent-card' + (isActive ? ' active-turn' : '') + '">' +
     '<div class="oheader">' +
       '<span class="oemoji">' + (p.isBot ? '🤖' : '👤') + '</span>' +
@@ -852,17 +1121,15 @@ function renderDiscardPile(game) {
     if (!pile) return;
     if (discard.length === 0) { pile.innerHTML = '<span style="color:#555;font-size:0.8rem">ว่าง</span>'; return; }
     var html = '';
-    // Show last few cards
-    var show = discard.slice();
-    for (var i = 0; i < show.length; i++) {
-      var card = codeToCard(show[i]);
-      if (!card) { console.warn('[Discard] Unknown card code:', show[i]); continue; }
+    for (var i = 0; i < discard.length; i++) {
+      var card = codeToCard(discard[i]);
+      if (!card) continue;
       var cls = handCardClass(card);
-      var rank = card.rank;
-      var suit = card.suit;
-      html += '<div class="dp-card ' + cls + '">' + rank + '<br>' + suit + '</div>';
+      html += '<div class="dp-card ' + cls + '" onclick="pickFromDiscard(' + i + ')" style="cursor:pointer;flex-shrink:0" title="หยิบใบนี้และทุกใบที่อยู่บน">' + card.rank + '<br>' + card.suit + '</div>';
     }
     pile.innerHTML = html;
+    var hint = document.getElementById('pick-discard-hint');
+    if (hint) hint.textContent = 'คลิกใบไหนก็ได้เพื่อหยิบทั้งกองที่อยู่บน';
   } catch(e) { console.error('renderDiscardPile error:', e); }
 }
 
@@ -873,20 +1140,20 @@ function renderYourHand() {
     var handCodes = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
     var hand = codesToCards(handCodes);
     var sorted = sortHand(hand);
+    var pickedCodes = (currentGame && currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[myPlayerId]) || [];
     var html = '';
     for (var hi = 0; hi < sorted.length; hi++) {
       var card = sorted[hi];
       var cls = handCardClass(card);
-      var rank = card.rank;
-      var suit = card.suit;
+      var isPicked = pickedCodes.indexOf(card.code) >= 0;
       var isSelected = selectedCards.indexOf(card.code) >= 0;
       var selClass = isSelected ? ' selected' : '';
+      var pickedClass = isPicked ? ' style="border-color:#ffd700;box-shadow:0 0 8px rgba(255,215,0,0.7)"' : '';
       var clickAttr = myTurn ? 'onclick="toggleSelect(\'' + card.code + '\')"' : '';
-      var extraTag = '';
-      if (card.isSpeto) extraTag = '<span class="ctag">สเปโต</span>';
-      html += '<div class="hand-card ' + cls + selClass + '" ' + clickAttr + '>' +
-        '<span class="cr">' + rank + '</span>' +
-        '<span class="cs">' + suit + '</span>' +
+      var extraTag = isPicked ? '<span class="ctag" style="color:#ffd700">หยิบมา</span>' : (isSpeto(card) ? '<span class="ctag">สเปโต</span>' : '');
+      html += '<div class="hand-card ' + cls + selClass + '" ' + clickAttr + pickedClass + '>' +
+        '<span class="cr">' + card.rank + '</span>' +
+        '<span class="cs">' + card.suit + '</span>' +
         extraTag +
         '</div>';
     }
@@ -906,7 +1173,7 @@ function renderPlayerMeldRow() {
       var meldHtml = '<div class="meld-set-display">';
       for (var ci = 0; ci < meldCodes.length; ci++) {
         var card = codeToCard(meldCodes[ci]);
-        meldHtml += renderCardSmall(card);
+        if (card) meldHtml += '<div class="ms-card ' + handCardClass(card) + '">' + card.rank + '<br>' + card.suit + '</div>';
       }
       meldHtml += '</div>';
       html += meldHtml;
@@ -930,9 +1197,10 @@ async function renderScoreboard(game) {
       var isYou = pid === myPlayerId;
       var pts = scores[pid] || 0;
       var meldCount = melds[pid] ? melds[pid].length : 0;
+      var isDark = meldCount === 0 && pts < 0;
       html += '<div class="score-item' + (isYou ? ' highlight' : '') + '">' +
         '<div class="sname">' + (p.isBot ? '🤖 ' : '') + (p.name || '??') + '</div>' +
-        '<div class="spoint" style="color:' + (isYou ? '#ffd700' : '#fff') + '">' + pts + '</div>' +
+        '<div class="spoint" style="color:' + (isYou ? '#ffd700' : '#fff') + '">' + (pts > 0 ? '+' : '') + pts + '</div>' +
         '<div style="font-size:0.7rem;color:#888">เกิด ' + meldCount + '</div></div>';
     }
     row.innerHTML = html;
@@ -943,6 +1211,14 @@ function toggleSelect(code) {
   try {
     var hand = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
     if (hand.indexOf(code) === -1) return;
+
+    // Cannot select cards that were picked from discard
+    var pickedCodes = (currentGame && currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[myPlayerId]) || [];
+    if (pickedCodes.indexOf(code) >= 0) {
+      notify('❌ ไม่สามารถทิ้งไพ่ที่หยิบจากกองทิ้งมาได้');
+      return;
+    }
+
     var idx = selectedCards.indexOf(code);
     if (idx >= 0) selectedCards.splice(idx, 1); else selectedCards.push(code);
     renderYourHand();
@@ -957,15 +1233,25 @@ function updateActionBtns() {
     var btnDiscard = document.getElementById('btn-discard');
     var btnEnd = document.getElementById('btn-end');
     var handStatus = document.getElementById('hand-status');
+
     if (myTurn && currentGame) {
       var phase = currentGame.phase || 'draw';
+      var picked = pendingPickedCodes.length > 0;
+
       if (btnDraw) btnDraw.disabled = phase !== 'draw';
       if (btnMeld) btnMeld.disabled = false;
-      if (btnDiscard) btnDiscard.disabled = selectedCards.length !== 1;
-      if (btnEnd) btnEnd.disabled = true;  // End turn only works after discard (handled by discardSelected calling advanceTurn)
-      if (handStatus) handStatus.textContent = phase === 'draw' ? '📦 จั่วหรือหยิบทิ้ง' : '🃏 เลือกไพ่ 1 ใบที่จะทิ้ง แล้วกดปุ่ม 🗑️ ทิ้ง';
+      if (btnDiscard) btnDiscard.disabled = !(selectedCards.length === 1 && !picked);
+      if (btnEnd) btnEnd.disabled = !(phase === 'action' && !picked);
+
+      if (picked) {
+        handStatus.textContent = '⚠️ ต้องเกิดใบที่หยิบจากกองทิ้งก่อน!';
+      } else if (phase === 'draw') {
+        handStatus.textContent = '📦 จั่วหรือหยิบจากกองทิ้ง';
+      } else {
+        handStatus.textContent = '🃏 เลือกไพ่ 1 ใบที่จะทิ้ง แล้วกดปุ่ม 🗑️ ทิ้ง';
+      }
     } else {
-      [btnDraw, btnMeld, btnDiscard, btnEnd].forEach(function(b) { if (b) b.disabled = true; });
+      [btnDraw, btnMeld, btnDiscard, btnEnd].forEach(function(b){ if(b) b.disabled = true; });
       if (handStatus) handStatus.textContent = '⏳ รอตาคนอื่น...';
     }
   } catch(e) {}
@@ -987,7 +1273,6 @@ function showEndGame(data) {
       table.innerHTML = '<tr><th>ผู้เล่น</th><th>แต้มรอบนี้</th><th>รวมสะสม</th></tr>';
       for (var pid in totalScores) {
         var p = players[pid] || {};
-        var isKnocker = roundScores[pid] >= (knockBonus || 0);
         var rs = roundScores[pid] || 0;
         table.innerHTML += '<tr class="' + (pid === winner ? 'winner-row' : '') + '">' +
           '<td>' + (p.isBot ? '🤖 ' : '👤 ') + (p.name || '??') + (pid === winner ? ' 👑' : '') + '</td>' +
@@ -1019,7 +1304,7 @@ async function playAgain() {
     var hp = 50;
     if (fc.code === '2♣' || fc.code === 'Q♠') hp = 100;
     var gameData = {
-      deck: deck.map(function(c) { return c.code; }),
+      deck: deck.map(function(c){ return c.code; }),
       hands: hands,
       discardPile: [fc.code],
       turnPlayerId: pids[0],
@@ -1033,12 +1318,14 @@ async function playAgain() {
       headCard: fc.code,
       headPoints: hp,
       hasFirstMeld: {},
+      lastDiscard: null,
+      deckEmpty: false,
       pickedFromDiscard: {}
     };
     for (var mi = 0; mi < pids.length; mi++) { gameData.melds[pids[mi]] = []; gameData.scores[pids[mi]] = 0; gameData.hasFirstMeld[pids[mi]] = false; }
     await db.from('rooms').update({ status: 'playing', game: gameData }).eq('id', roomCode);
     currentGame = gameData;
-    selectedCards = [];
+    selectedCards = []; pendingPickedCodes = [];
     showScreen('game-screen');
     renderGame(gameData);
   } catch(e) { console.error('playAgain error:', e); }
@@ -1050,31 +1337,27 @@ function goHome() {
 }
 
 // --- INIT ---
-var pollInterval = null;
-
 function startPolling(rid) {
   if (pollInterval) clearInterval(pollInterval);
   pollInterval = setInterval(async function() {
-    if (!roomCode || !currentGame) { clearInterval(pollInterval); return; }
+    if (!roomCode) { clearInterval(pollInterval); return; }
     try {
       var _data = await db.from('rooms').select('*').eq('id', rid).single();
       if (_data.data && _data.data.game) {
         var remoteGame = _data.data;
-        // Only update if different from local state
         if (JSON.stringify(remoteGame.game) !== JSON.stringify(currentGame)) {
-          console.log('[Poll] Remote game state changed, updating local');
+          console.log('[Poll] Remote game state changed');
           currentGame = remoteGame.game;
           if (remoteGame.status === 'playing') renderGame(currentGame);
           else if (remoteGame.status === 'ended') showEndGame({ winner: remoteGame.winner, totalScores: remoteGame.totalScores, players: remoteGame.players });
         }
       }
     } catch(e) {}
-  }, 2000);
-  console.log('[Poll] Started polling for room:', rid);
+  }, 1000);
 }
 
 function stopPolling() {
-  if (pollInterval) { clearInterval(pollInterval); pollInterval = null; console.log('[Poll] Stopped'); }
+  if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
 }
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -1083,17 +1366,15 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] Loaded! DB:', db ? 'OK' : 'NOT YET');
-// Cleanup old rooms (>30 min) on startup
-if (db) {
-  (async function() {
-    try {
-      var thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-      var _d = await db.from('rooms').delete().lt('updated_at', thirtyMinAgo).neq('status', 'playing');
-      console.log('[Cleanup] Removed old inactive rooms');
-    } catch(e) { console.log('[Cleanup] Skipped:', e.message); }
-  })();
-}
+  console.log('[DummyRummy] v10 Loaded!');
+  if (db) {
+    (async function() {
+      try {
+        var thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+        await db.from('rooms').delete().lt('updated_at', thirtyMinAgo).neq('status', 'playing');
+      } catch(e) {}
+    })();
+  }
 });
 
 console.log('[DummyRummy] Script parsing OK!');

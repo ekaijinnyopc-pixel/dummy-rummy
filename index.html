@@ -120,13 +120,12 @@ body {
 
 /* Row 2: Center - Draw + Discard */
 .game-row2 {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
+  display: flex;
+  gap: 16px;
   align-items: center;
   background: #16213e;
   border-radius: 16px;
-  padding: 16px 24px;
+  padding: 12px 20px;
   border: 1px solid rgba(255,255,255,0.08);
 }
 
@@ -238,22 +237,22 @@ body {
 
 .discard-area {
   text-align: center;
+  flex: 1;
+  min-width: 0;
 }
 .discard-pile-cards {
   display: flex;
-  justify-content: center;
-  gap: 4px;
+  justify-content: flex-start;
+  gap: 3px;
   min-height: 60px;
   align-items: center;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  max-width: 280px;
+  flex-wrap: wrap;
   padding: 4px;
 }
 .discard-pile-cards .dp-card {
-  width: 44px;
-  height: 62px;
-  border-radius: 6px;
+  width: 36px;
+  height: 52px;
+  border-radius: 5px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -578,6 +577,12 @@ body {
 
   <!-- ROW 2: Center (Draw + Discard) -->
   <div class="game-row2">
+    <div class="discard-area">
+      <div class="deck-label">🗑️ กองทิ้ง</div>
+      <div class="discard-pile-cards" id="discard-pile"></div>
+      <div class="deck-label" style="margin-top:4px;cursor:pointer" id="pick-discard-hint" onclick="pickDiscardTop()">กดที่ไพ่บนสุดเพื่อหยิบ</div>
+    </div>
+
     <div class="center-deck">
       <div class="deck-label">📦 กองจั่ว</div>
       <div class="deck-stack" id="draw-deck" onclick="drawCard()">
@@ -588,12 +593,6 @@ body {
         </div>
       </div>
       <div class="deck-count" id="deck-count">0 ใบ</div>
-    </div>
-
-    <div class="discard-area">
-      <div class="deck-label">🗑️ กองทิ้ง</div>
-      <div class="discard-pile-cards" id="discard-pile"></div>
-      <div class="deck-label" style="margin-top:4px">คลิกที่ไพ่เพื่อหยิบ</div>
     </div>
   </div>
 
@@ -655,6 +654,6 @@ body {
 <div class="confetti" id="confetti"></div>
 
 <script src="supabase.js?v=1"></script>
-<script src="game-core.js?v=5"></script>
+<script src="game-core.js?v=10"></script>
 </body>
 </html>
