@@ -147,6 +147,7 @@ function miniCardClass(card) {
   if (!card) return 'black';
   if (card.isSpeto) return 'speto';
   if (card.suit === '♥' || card.suit === '♦') return 'red';
+  if (card.suit === '♣') return 'clubs';  /* clubs = blue, not confused with spades (black) */
   return 'black';
 }
 
@@ -162,6 +163,7 @@ function handCardClass(card) {
   if (!card) return 'black';
   if (card.isSpeto) return 'speto';
   if (card.suit === '♥' || card.suit === '♦') return 'red';
+  if (card.suit === '♣') return 'clubs';  /* clubs = blue, not confused with spades (black) */
   return 'black';
 }
 
@@ -351,11 +353,13 @@ async function drawCard() {
     if (!currentGame || !myTurn || currentGame.phase !== 'draw') return;
     var deck = currentGame.deck.slice();
     if (deck.length === 0) { notify('กองจั่วหมดแล้ว!'); return; }
-    var drawn = deck.pop();
+    var drawnCode = deck.pop();        // deck stores string codes, not card objects
+    var drawnCard = codeToCard(drawnCode);  // convert to card object for display
     var newHands = Object.assign({}, currentGame.hands);
-    newHands[myPlayerId] = (newHands[myPlayerId] || []).concat([drawn.code]);
-    currentGame = Object.assign({}, currentGame, { deck: deck, hands: newHands, phase: 'action', turnStartTime: Date.now() });
-    await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+    newHands[myPlayerId] = (newHands[myPlayerId] || []).concat([drawnCode]);  // store string code
+    var updatedGame = Object.assign({}, currentGame, { deck: deck, hands: newHands, phase: 'action', turnStartTime: Date.now() });
+    currentGame = updatedGame;
+    await db.from('rooms').update({ game: updatedGame }).eq('id', roomCode);
     // Update local hand display immediately
     var myHandDiv = document.getElementById('your-hand');
     if (myHandDiv) {
@@ -372,8 +376,7 @@ async function drawCard() {
     }
     updateActionBtns();
     renderDiscardPile(currentGame);  // Update discard pile
-    var card = codeToCard(drawn.code);
-    notify('📦 จั่วได้: ' + (card ? card.rank + card.suit : drawn.code));
+    notify('📦 จั่วได้: ' + (drawnCard ? drawnCard.rank + drawnCard.suit : drawnCode));
   } catch(e) { console.error('drawCard error:', e); }
 }
 
