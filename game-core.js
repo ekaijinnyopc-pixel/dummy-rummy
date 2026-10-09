@@ -889,8 +889,8 @@ function updateActionBtns() {
       if (btnDraw) btnDraw.disabled = phase !== 'draw';
       if (btnMeld) btnMeld.disabled = false;
       if (btnDiscard) btnDiscard.disabled = selectedCards.length !== 1;
-      if (btnEnd) btnEnd.disabled = phase === 'draw';
-      if (handStatus) handStatus.textContent = phase === 'draw' ? '📦 จั่วหรือหยิบทิ้ง' : '🃏 เลือกไพ่ทิ้ง หรือเกิด';
+      if (btnEnd) btnEnd.disabled = true;  // End turn only works after discard (handled by discardSelected calling advanceTurn)
+      if (handStatus) handStatus.textContent = phase === 'draw' ? '📦 จั่วหรือหยิบทิ้ง' : '🃏 เลือกไพ่ 1 ใบที่จะทิ้ง แล้วกดปุ่ม 🗑️ ทิ้ง';
     } else {
       [btnDraw, btnMeld, btnDiscard, btnEnd].forEach(function(b) { if (b) b.disabled = true; });
       if (handStatus) handStatus.textContent = '⏳ รอตาคนอื่น...';
