@@ -84,6 +84,9 @@ function sortHand(hand) {
 
 function codeToCard(code) {
   if (!code) return null;
+  // Accept card object (pass-through)
+  if (typeof code === 'object' && code !== null && code.code) return code;
+  // Handle string codes
   if (code === 'JOKER1') return { suit: '🃏', rank: 'JOKER', code: 'JOKER1', isJoker: true };
   if (code === 'JOKER2') return { suit: '🃏', rank: 'JOKER', code: 'JOKER2', isJoker: true };
   if (code === '2♣') return { suit: '♣', rank: '2', code: '2♣', isSpeto: true };
@@ -300,7 +303,7 @@ async function startGame() {
       for (var di = 0; di < 7; di++) handCards.push(deck.pop().code);
       hands[playerIds[pi]] = handCards;
     }
-    var discardPile = [deck.pop().code];
+    var firstCard = deck.pop(); var discardPile = [firstCard];
     var gameData = {
       deck: deck.map(function(c) { return c.code; }),
       hands: hands,
@@ -378,7 +381,7 @@ async function pickDiscard() {
     if (discard.length === 0) return;
     var top = discard.pop();
     var newHands = Object.assign({}, currentGame.hands);
-    newHands[myPlayerId] = (newHands[myPlayerId] || []).concat([top]);
+    var pickedCard = codeToCard(top); newHands[myPlayerId] = (newHands[myPlayerId] || []).concat([pickedCard ? pickedCard.code : top]);
     currentGame = Object.assign({}, currentGame, { hands: newHands, discardPile: discard, phase: 'action', turnStartTime: Date.now() });
     await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
     // Update local hand display immediately
@@ -407,7 +410,13 @@ async function discardSelected() {
     var card = selectedCards[0];
     var hand = (currentGame.hands[myPlayerId] || []).slice();
     var newHand = hand.filter(function(c) { return c !== card; });
-    var newDiscard = currentGame.discardPile.concat([card]);
+    var cardToDiscard = null;
+    var allCards = codesToCards((currentGame.hands[myPlayerId] || []));
+    for (var fi = 0; fi < allCards.length; fi++) {
+      if (allCards[fi].code === card) { cardToDiscard = allCards[fi]; break; }
+    }
+    if (!cardToDiscard) return;
+    var newDiscard = currentGame.discardPile.concat([cardToDiscard]);
     selectedCards = [];
     if (newHand.length === 0) { await handleKnockout(myPlayerId); return; }
     var newHands = Object.assign({}, currentGame.hands);
@@ -505,7 +514,7 @@ async function botPlay(botId) {
     if (hand.length > 0) {
       var discard = hand[hand.length - 1];
       var newHand = hand.filter(function(c) { return c.code !== discard.code; });
-      var newDiscard = currentGame.discardPile.concat([discard.code]);
+      var newDiscard = currentGame.discardPile.concat([discard]);
       if (newHand.length === 0) {
         var finalHands = Object.assign({}, currentGame.hands);
         finalHands[botId] = [];
