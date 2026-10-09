@@ -385,7 +385,7 @@ async function advanceTurn() {
     renderGame(currentGame);
     var _data = await db.from('rooms').select('players').eq('id', roomCode).single();
     var nextPlayer = _data.data && _data.data.players ? _data.data.players[nextPid] : null;
-    if (nextPlayer && nextPlayer.isBot) setTimeout(function() { botPlay(nextPid); }, 1500);
+    if (nextPlayer && nextPlayer.isBot) setTimeout(function() { botPlay(nextPid); }, 800);
   } catch(e) { console.error('advanceTurn error:', e); }
 }
 
@@ -440,7 +440,7 @@ async function botPlay(botId) {
   try {
     if (!currentGame || currentGame.status !== 'playing') return;
     if (currentGame.turnPlayerId !== botId) return;
-    await delay(1000);
+    await delay(600);
     var hand = codesToCards(currentGame.hands[botId] || []);
     var deck = currentGame.deck.slice();
     if (deck.length > 0) {
@@ -450,7 +450,7 @@ async function botPlay(botId) {
       newHands[botId] = hand.map(function(c) { return c.code; });
       currentGame = Object.assign({}, currentGame, { deck: deck, hands: newHands, phase: 'action', turnStartTime: Date.now() });
       await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-      await delay(1000);
+      await delay(600);
     }
     if (hand.length > 0) {
       var discard = hand[hand.length - 1];
@@ -466,7 +466,7 @@ async function botPlay(botId) {
       newHands2[botId] = newHand.map(function(c) { return c.code; });
       currentGame = Object.assign({}, currentGame, { hands: newHands2, discardPile: newDiscard, phase: 'draw' });
       await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-      await delay(800);
+      await delay(500);
     }
     await advanceTurn();
   } catch(e) { console.error('botPlay error:', e); }
@@ -695,12 +695,6 @@ function opponentCardHtml(pid, game, players) {
   for (var mi = 0; mi < melds.length; mi++) {
     meldChips += '<div class="meld-chip">🃏 ' + (melds[mi].type || 'ตอง') + '</div>';
   }
-  var miniCards = '';
-  var handCodes = game.hands && game.hands[pid] ? game.hands[pid] : [];
-  for (var ci = 0; ci < handCodes.length; ci++) {
-    var card = codeToCard(handCodes[ci]);
-    miniCards += renderMiniCard(card);
-  }
   var activeLabel = isActive ? '<span class="oactive">▶ ตาคนนี้</span>' : '';
   return '<div class="opponent-card' + (isActive ? ' active-turn' : '') + '">' +
     '<div class="oheader">' +
@@ -708,7 +702,10 @@ function opponentCardHtml(pid, game, players) {
       '<span class="oname">' + (p.name || '??') + '</span>' +
       activeLabel +
     '</div>' +
-    '<div class="ocard-mini">' + (handCodes.length > 0 ? miniCards : '<span style="color:#555;font-size:0.7rem">ไพ่ ' + handSize + ' ใบ</span>') + '</div>' +
+    '<div style="text-align:center;padding:8px 0">' +
+      '<div style="font-size:2rem;font-weight:700;color:var(--gold)">' + handSize + '</div>' +
+      '<div style="font-size:0.75rem;color:#888">ใบ</div>' +
+    '</div>' +
     (meldChips ? '<div class="omeld-list">' + meldChips + '</div>' : '') +
     '</div>';
 }

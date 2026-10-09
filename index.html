@@ -167,7 +167,7 @@ body {
   transition: border-color 0.3s;
 }
 .opponent-card.active-turn { border-color: var(--gold); box-shadow: 0 0 12px rgba(255,215,0,0.3); }
-.opponent-card .oheader { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.opponent-card .oheader { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .opponent-card .oemoji { font-size: 1.2rem; }
 .opponent-card .oname { font-weight: 600; font-size: 0.9rem; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .opponent-card .oactive { color: var(--gold); font-size: 0.7rem; }
@@ -281,17 +281,17 @@ body {
   align-items: center;
 }
 .hand-card {
-  width: 56px;
-  height: 76px;
-  border-radius: 8px;
+  width: 60px;
+  height: 82px;
+  border-radius: 10px;
   border: 2px solid;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
+  gap: 3px;
   font-weight: 700;
-  font-size: 0.8rem;
+  font-size: 0.85rem;
   cursor: pointer;
   transition: all 0.15s;
   position: relative;
@@ -316,10 +316,14 @@ body {
 .meld-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-  padding-top: 8px;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
   border-top: 1px solid #333;
+  min-height: 60px;
+  align-items: center;
+  background: rgba(255,215,0,0.03);
+  border-radius: 8px;
 }
 .meld-set-display {
   display: flex;
