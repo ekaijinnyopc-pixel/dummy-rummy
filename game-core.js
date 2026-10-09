@@ -1,10 +1,10 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v3
+// 🃏 DUMMY RUMMY — game-core.js v5 (new layout)
 // ============================================================
 
 // --- SUPABASE CONFIG ---
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRidGxiZXltcmNob2Rsb2JveW1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1MTIxNTksImV4cCI6MjEwNzA4ODE1OX0.HHqLCDj3_rEAeGQxs-Yz8eX-xJG0VbMbYWIELC6LYbc';
+const SUPABASE_KEY = 'eyJhbG…LYbc';
 
 var db;
 
@@ -15,19 +15,18 @@ function initDb() {
       console.log('[Supabase] Connected! URL:', SUPABASE_URL);
     } else {
       console.error('[Supabase] CDN not loaded!');
-      alert('ไม่สามารถโหลด Supabase ได้ กรุณารีเฟรชหน้า');
     }
   } catch(e) {
     console.error('[Supabase] Init error:', e);
   }
 }
 
-// Load supabase then init
+// Load supabase locally
 (function() {
   var script = document.createElement('script');
-  script.src = 'supabase.js';
+  script.src = 'supabase.js?v=1';
   script.onload = initDb;
-  script.onerror = function() { console.error('[Supabase] CDN failed!'); };
+  script.onerror = function() { console.error('[Supabase] Local file failed!'); };
   document.head.appendChild(script);
 })();
 
@@ -59,11 +58,11 @@ function shuffle(arr) {
 }
 
 function cardPoints(card) {
+  if (!card) return 0;
   if (card.isJoker || card.isSpeto) return 50;
   if (card.rank === 'A') return 15;
   if (['J','Q','K'].indexOf(card.rank) >= 0) return 10;
-  if (['2','3','4','5','6','7','8','9'].indexOf(card.rank) >= 0) return 5;
-  return 0;
+  return parseInt(card.rank) || 0;
 }
 
 function sortHand(hand) {
@@ -90,9 +89,10 @@ function codeToCard(code) {
   if (code === '2♣') return { suit: '♣', rank: '2', code: '2♣', isSpeto: true };
   if (code === 'Q♠') return { suit: '♠', rank: 'Q', code: 'Q♠', isSpeto: true };
   for (var si = 0; si < SUITS.length; si++) {
-    if (code.indexOf(SUITS[si], code.length - SUITS[si].length) !== -1) {
+    var s = SUITS[si];
+    if (code.endsWith(s)) {
       var rank = code.substring(0, code.length - 1);
-      return { suit: SUITS[si], rank: rank, code: code };
+      return { suit: s, rank: rank, code: code };
     }
   }
   return null;
@@ -145,37 +145,28 @@ function showScreen(id) {
   } catch(e) { console.error('showScreen error:', e); }
 }
 
-function renderCardEl(card) {
-  if (!card) return '';
-  var bg, border, color;
-  if (card.isJoker) { bg = 'linear-gradient(135deg,#ffd700,#ff8f00)'; border = '#ffd700'; color = '#fff'; }
-  else if (card.isSpeto) { bg = '#1a1a2e'; border = '#ffd700'; color = '#ffd700'; }
-  else if (card.suit === '♥' || card.suit === '♦') { bg = '#fff5f5'; border = '#ef9a9a'; color = '#c62828'; }
-  else { bg = '#f5f5ff'; border = '#9fa8da'; color = '#1a237e'; }
-  var rank = card.isJoker ? 'J' : card.rank;
-  var suit = card.isJoker ? '★' : card.suit;
-  var sel = false;
-  for (var i = 0; i < selectedCards.length; i++) { if (selectedCards[i] === card.code) { sel = true; break; } }
-  var selStyle = sel ? 'box-shadow:0 0 14px rgba(255,215,0,0.7);transform:translateY(-12px)' : '';
-  var cursor = myTurn ? 'cursor:pointer' : '';
-  var onclickAttr = myTurn ? ('toggleSelect(\u0027' + card.code + '\u0027)') : '';
-  return '<div ' + (myTurn ? 'data-code="' + card.code + '" onclick="toggleSelect(\u0027' + card.code + '\u0027)"' : '') + ' style="width:60px;height:84px;background:' + bg + ';border:2px solid ' + (sel ? '#ffd700' : border) + ';color:' + color + ';border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;transition:all 0.15s;' + selStyle + ';' + cursor + '">' +
-    '<span style="font-size:1rem;font-weight:700">' + rank + '</span>' +
-    '<span style="font-size:1.3rem">' + suit + '</span>' +
-    (card.isSpeto ? '<span style="font-size:0.5rem;color:#ffd700">สเปโต</span>' : '') +
-    (card.isJoker ? '<span style="font-size:0.5rem;color:#fff">โจ๊กเกอร์</span>' : '') +
-    '</div>';
+function miniCardClass(card) {
+  if (!card) return 'black';
+  if (card.isJoker) return 'joker';
+  if (card.isSpeto) return 'speto';
+  if (card.suit === '♥' || card.suit === '♦') return 'red';
+  return 'black';
 }
 
-function toggleSelect(code) {
-  try {
-    var hand = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
-    if (hand.indexOf(code) === -1) return;
-    var idx = selectedCards.indexOf(code);
-    if (idx >= 0) selectedCards.splice(idx, 1); else selectedCards.push(code);
-    renderYourHand();
-    updateActionBtns();
-  } catch(e) { console.error('toggleSelect error:', e); }
+function renderMiniCard(card) {
+  if (!card) return '';
+  var cls = miniCardClass(card);
+  var rank = card.isJoker ? 'J' : card.rank;
+  var suit = card.isJoker ? '★' : card.suit;
+  return '<div class="mini-card ' + cls + '">' + rank + '<br>' + suit + '</div>';
+}
+
+function handCardClass(card) {
+  if (!card) return 'black';
+  if (card.isJoker) return 'joker';
+  if (card.isSpeto) return 'speto';
+  if (card.suit === '♥' || card.suit === '♦') return 'red';
+  return 'black';
 }
 
 function confetti() {
@@ -344,7 +335,8 @@ async function drawCard() {
     await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
     renderYourHand();
     updateActionBtns();
-    notify('📦 จั่วได้: ' + drawn.rank + drawn.suit);
+    var card = codeToCard(drawn.code);
+    notify('📦 จั่วได้: ' + (card ? card.rank + card.suit : drawn.code));
   } catch(e) { console.error('drawCard error:', e); }
 }
 
@@ -393,7 +385,7 @@ async function advanceTurn() {
     renderGame(currentGame);
     var _data = await db.from('rooms').select('players').eq('id', roomCode).single();
     var nextPlayer = _data.data && _data.data.players ? _data.data.players[nextPid] : null;
-    if (nextPlayer && nextPlayer.isBot) setTimeout(function() { botPlay(nextPid); }, 1200);
+    if (nextPlayer && nextPlayer.isBot) setTimeout(function() { botPlay(nextPid); }, 1500);
   } catch(e) { console.error('advanceTurn error:', e); }
 }
 
@@ -448,6 +440,7 @@ async function botPlay(botId) {
   try {
     if (!currentGame || currentGame.status !== 'playing') return;
     if (currentGame.turnPlayerId !== botId) return;
+    await delay(1000);
     var hand = codesToCards(currentGame.hands[botId] || []);
     var deck = currentGame.deck.slice();
     if (deck.length > 0) {
@@ -455,23 +448,25 @@ async function botPlay(botId) {
       hand = sortHand(hand.concat([drawn]));
       var newHands = Object.assign({}, currentGame.hands);
       newHands[botId] = hand.map(function(c) { return c.code; });
-      currentGame = Object.assign({}, currentGame, { deck: deck, hands: newHands, phase: 'action' });
+      currentGame = Object.assign({}, currentGame, { deck: deck, hands: newHands, phase: 'action', turnStartTime: Date.now() });
       await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-      await delay(800);
+      await delay(1000);
     }
     if (hand.length > 0) {
       var discard = hand[hand.length - 1];
       var newHand = hand.filter(function(c) { return c.code !== discard.code; });
       var newDiscard = currentGame.discardPile.concat([discard.code]);
       if (newHand.length === 0) {
-        await db.from('rooms').update({ game: Object.assign({}, currentGame, { hands: Object.assign({}, currentGame.hands, { botId: [] }), discardPile: newDiscard }) }).eq('id', roomCode);
+        var finalHands = Object.assign({}, currentGame.hands);
+        finalHands[botId] = [];
+        await db.from('rooms').update({ game: Object.assign({}, currentGame, { hands: finalHands, discardPile: newDiscard }) }).eq('id', roomCode);
         await handleKnockout(botId); return;
       }
       var newHands2 = Object.assign({}, currentGame.hands);
       newHands2[botId] = newHand.map(function(c) { return c.code; });
-      currentGame = Object.assign({}, currentGame, { hands: newHands2, discardPile: newDiscard });
+      currentGame = Object.assign({}, currentGame, { hands: newHands2, discardPile: newDiscard, phase: 'draw' });
       await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-      await delay(600);
+      await delay(800);
     }
     await advanceTurn();
   } catch(e) { console.error('botPlay error:', e); }
@@ -519,30 +514,25 @@ function findMelds(hand) {
 }
 
 function openMeldModal() {
-  if (!currentGame || !myTurn) return;
+  if (!currentGame) return;
   selectedMeldIndex = null;
   try {
     document.getElementById('meld-modal').classList.add('active');
-    document.getElementById('meld-section').style.display = 'block';
-    document.getElementById('layoff-section').style.display = 'none';
-    document.getElementById('tab-meld').className = 'btn btn-primary';
-    document.getElementById('tab-layoff').className = 'btn btn-secondary';
-    document.getElementById('btn-confirm-meld').disabled = true;
     renderMeldOptions();
+    document.getElementById('btn-confirm-meld').disabled = true;
   } catch(e) { console.error('openMeldModal error:', e); }
 }
-function closeMeldModal() { try { document.getElementById('meld-modal').classList.remove('active'); } catch(e) {} }
+
+function closeMeldModal() {
+  try { document.getElementById('meld-modal').classList.remove('active'); } catch(e) {}
+}
 
 function renderCardSmall(card) {
   if (!card) return '';
-  var bg, border, color;
-  if (card.isJoker) { bg = 'linear-gradient(135deg,#ffd700,#ff8f00)'; border = '#ffd700'; color = '#fff'; }
-  else if (card.isSpeto) { bg = '#1a1a2e'; border = '#ffd700'; color = '#ffd700'; }
-  else if (card.suit === '♥' || card.suit === '♦') { bg = '#fff5f5'; border = '#ef9a9a'; color = '#c62828'; }
-  else { bg = '#f5f5ff'; border = '#9fa8da'; color = '#1a237e'; }
-  return '<div style="width:46px;height:64px;background:' + bg + ';border:1px solid ' + border + ';color:' + color + ';border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px">' +
-    '<span style="font-size:0.7rem;font-weight:700">' + (card.isJoker ? 'J' : card.rank) + '</span>' +
-    '<span style="font-size:1rem">' + (card.isJoker ? '★' : card.suit) + '</span></div>';
+  var cls = handCardClass(card);
+  var rank = card.isJoker ? 'J' : card.rank;
+  var suit = card.isJoker ? '★' : card.suit;
+  return '<div class="ms-card ' + cls + '">' + rank + '<br>' + suit + '</div>';
 }
 
 function renderMeldOptions() {
@@ -552,15 +542,15 @@ function renderMeldOptions() {
     var melds = findMelds(hand);
     var container = document.getElementById('meld-section');
     if (melds.length === 0) {
-      container.innerHTML = '<div style="color:#aaa;text-align:center;padding:20px">ไม่พบชุดไพ่ที่เกิดได้<br><small>ต้องมีไพ่ 3 ใบขึ้นไป</small></div>';
+      container.innerHTML = '<div style="color:#aaa;text-align:center;padding:20px">ไม่พบชุดไพ่ที่เกิดได้<br><small>ต้องมีไพ่ 3 ใบขึ้นไป ดอกเดียวกัน (ตอง) หรือเรียงกัน 3 ใบขึ้นไป (เรียง)</small></div>';
       return;
     }
-    var html = '<div style="color:#aaa;font-size:0.9rem;margin-bottom:12px">เลือกชุดไพ่ที่จะเกิด:</div><div class="meld-sets">';
+    var html = '<div style="color:#aaa;font-size:0.9rem;margin-bottom:12px;text-align:center">เลือกชุดไพ่ที่จะเกิด:</div><div class="meld-sets">';
     for (var mi = 0; mi < melds.length; mi++) {
       var meld = melds[mi];
       var cardsHtml = '';
       for (var ci = 0; ci < meld.cards.length; ci++) cardsHtml += renderCardSmall(meld.cards[ci]);
-      html += '<div class="meld-set" onclick="selectMeld(' + mi + ')">' + cardsHtml + '<div style="width:100%;font-size:0.7rem;color:#888;text-align:center;margin-top:4px">' + (meld.type === 'set' ? 'ตอง' : 'เรียง') + (meld.jokerUsed ? ' (ใช้โจ๊ก)' : '') + '</div></div>';
+      html += '<div class="meld-set" onclick="selectMeld(' + mi + ')">' + cardsHtml + '<div style="width:100%;font-size:0.7rem;color:#888;text-align:center;margin-top:4px">' + (meld.type === 'set' ? 'ตอง' : 'เรียง') + (meld.jokerUsed ? ' ✨' : '') + '</div></div>';
     }
     html += '</div>';
     container.innerHTML = html;
@@ -596,10 +586,11 @@ async function confirmMeld() {
     newHands[myPlayerId] = newHandCodes;
     currentGame = Object.assign({}, currentGame, { hands: newHands, melds: newMelds });
     await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-    notify('🃏 เกิด ' + (meld.type === 'set' ? 'ตอง' : 'เรียง') + 'สำเร็จ!');
+    notify('🃏 เกิด ' + (meld.type === 'set' ? 'ตอง' : 'เรียง') + ' สำเร็จ!');
     closeMeldModal();
     renderYourHand();
     renderScoreboard(currentGame);
+    renderPlayerMeldRow();
   } catch(e) { console.error('confirmMeld error:', e); }
 }
 
@@ -613,7 +604,7 @@ async function renderLobby(players) {
     for (var ai = 0; ai < arr.length; ai++) {
       var p = arr[ai];
       var isYou = p.id === myPlayerId;
-      html += '<div class="player-slot filled ' + (isYou ? 'you' : '') + ' ' + (p.isBot ? 'bot' : '') + '">' +
+      html += '<div class="player-slot ' + (isYou ? 'you' : '') + ' ' + (p.isBot ? '' : '') + '">' +
         '<div class="pemoji">' + (p.isBot ? '🤖' : '👤') + '</div>' +
         '<div class="pname">' + p.name + '</div>' +
         '<div class="ptype">' + (isYou ? '(คุณ)' : p.isBot ? 'AI' : 'ผู้เล่น') + '</div></div>';
@@ -624,7 +615,6 @@ async function renderLobby(players) {
     list.innerHTML = html;
     var humanCount = arr.filter(function(p) { return !p.isBot; }).length;
     btnStart.style.display = humanCount >= 1 ? 'block' : 'none';
-    document.getElementById('lobby-status').style.display = 'none';
   } catch(e) { console.error('renderLobby error:', e); }
 }
 
@@ -633,13 +623,18 @@ async function renderGame(game) {
     if (!game) return;
     turnPlayerId = game.turnPlayerId;
     myTurn = turnPlayerId === myPlayerId;
-    document.getElementById('turn-indicator').textContent = myTurn ? '🎯 ตาของคุณ!' : '⏳ รอตาคนอื่น...';
-    document.getElementById('round-info').textContent = 'รอบ: ' + (game.round || 1) + ' | ทิ้ง: ' + (game.discardPile ? game.discardPile.length : 0);
-    document.getElementById('deck-count').textContent = (game.deck ? game.deck.length : 0) + ' ใบ';
-    document.getElementById('your-name').textContent = myName;
+    var ti = document.getElementById('turn-indicator');
+    if (ti) ti.textContent = myTurn ? '🎯 ตาของคุณ!' : '⏳ รอตาคนอื่น...';
+    var ri = document.getElementById('round-info');
+    if (ri) ri.textContent = 'รอบ: ' + (game.round || 1) + ' | ทิ้ง: ' + (game.discardPile ? game.discardPile.length : 0);
+    var dc = document.getElementById('deck-count');
+    if (dc) dc.textContent = (game.deck ? game.deck.length : 0) + ' ใบ';
+    var yn = document.getElementById('your-name');
+    if (yn) yn.textContent = myName;
     await renderOpponents(game);
     renderDiscardPile(game);
     renderYourHand();
+    renderPlayerMeldRow();
     renderScoreboard(game);
     updateActionBtns();
   } catch(e) { console.error('renderGame error:', e); }
@@ -647,55 +642,151 @@ async function renderGame(game) {
 
 async function renderOpponents(game) {
   try {
-    var container = document.getElementById('opponents-row');
-    container.innerHTML = '';
     var _data = await db.from('rooms').select('players').eq('id', roomCode).single();
     var players = (_data.data && _data.data.players) || {};
-    for (var oi = 0; oi < game.playerOrder.length; oi++) {
-      var pid = game.playerOrder[oi];
-      if (pid === myPlayerId) continue;
-      var handSize = game.hands && game.hands[pid] ? game.hands[pid].length : 0;
-      var isActive = game.turnPlayerId === pid;
-      var p = players[pid] || {};
-      container.innerHTML += '<div class="opponent-card ' + (isActive ? 'active-turn' : '') + '">' +
-        '<div style="font-size:1.2rem">' + (p.isBot ? '🤖' : '👤') + '</div>' +
-        '<div class="oname">' + (p.name || '??') + '</div>' +
-        '<div class="ocard-count">' + handSize + ' ใบ</div></div>';
+    var order = game.playerOrder || [];
+    var myIdx = order.indexOf(myPlayerId);
+
+    // Split opponents: those after me go top, those before go bottom
+    var opponents = [];
+    for (var oi = 0; oi < order.length; oi++) {
+      if (order[oi] !== myPlayerId) opponents.push(order[oi]);
     }
+
+    // Top row: opponents in order starting from myIdx+1
+    var top = [];
+    var bottom = [];
+    if (opponents.length >= 1) top.push(opponents[0]);
+    if (opponents.length >= 2) top.push(opponents[1]);
+    if (opponents.length >= 3) bottom.push(opponents[2]);
+    // Pad bottom to 2 slots
+    while (bottom.length < 1) bottom.push(null);
+    while (top.length < 2) top.push(null);
+
+    var topHtml = '';
+    for (var ti = 0; ti < 2; ti++) {
+      topHtml += opponentCardHtml(top[ti], game, players);
+    }
+    var botHtml = '';
+    for (var bi = 0; bi < 1; bi++) {
+      botHtml += opponentCardHtml(bottom[bi], game, players);
+    }
+    // If 4 players total, bottom row needs 2
+    if (opponents.length >= 3) {
+      botHtml = opponentCardHtml(bottom[0], game, players) + opponentCardHtml(null, game, players);
+    }
+
+    var topRow = document.getElementById('row-opponents-top');
+    var botRow = document.getElementById('row-opponents-bottom');
+    if (topRow) topRow.innerHTML = topHtml;
+    if (botRow) botRow.innerHTML = botHtml;
   } catch(e) { console.error('renderOpponents error:', e); }
+}
+
+function opponentCardHtml(pid, game, players) {
+  if (!pid) {
+    return '<div class="opponent-card" style="opacity:0.3"><div class="oheader"><span class="oemoji">❓</span><span class="oname">---</span></div><div class="ocard-mini"><span style="color:#555;font-size:0.75rem">รอผู้เล่น</span></div></div>';
+  }
+  var handSize = game.hands && game.hands[pid] ? game.hands[pid].length : 0;
+  var isActive = game.turnPlayerId === pid;
+  var p = players[pid] || {};
+  var melds = game.melds && game.melds[pid] ? game.melds[pid] : [];
+  var meldChips = '';
+  for (var mi = 0; mi < melds.length; mi++) {
+    meldChips += '<div class="meld-chip">🃏 ' + (melds[mi].type || 'ตอง') + '</div>';
+  }
+  var miniCards = '';
+  var handCodes = game.hands && game.hands[pid] ? game.hands[pid] : [];
+  for (var ci = 0; ci < handCodes.length; ci++) {
+    var card = codeToCard(handCodes[ci]);
+    miniCards += renderMiniCard(card);
+  }
+  var activeLabel = isActive ? '<span class="oactive">▶ ตาคนนี้</span>' : '';
+  return '<div class="opponent-card' + (isActive ? ' active-turn' : '') + '">' +
+    '<div class="oheader">' +
+      '<span class="oemoji">' + (p.isBot ? '🤖' : '👤') + '</span>' +
+      '<span class="oname">' + (p.name || '??') + '</span>' +
+      activeLabel +
+    '</div>' +
+    '<div class="ocard-mini">' + (handCodes.length > 0 ? miniCards : '<span style="color:#555;font-size:0.7rem">ไพ่ ' + handSize + ' ใบ</span>') + '</div>' +
+    (meldChips ? '<div class="omeld-list">' + meldChips + '</div>' : '') +
+    '</div>';
 }
 
 function renderDiscardPile(game) {
   try {
     var pile = document.getElementById('discard-pile');
     var discard = game.discardPile || [];
-    if (discard.length === 0) { pile.innerHTML = ''; return; }
-    var card = codeToCard(discard[discard.length - 1]);
-    var bg, border, color;
-    if (card && card.isJoker) { bg = 'linear-gradient(135deg,#ffd700,#ff8f00)'; border = '#ffd700'; color = '#fff'; }
-    else if (card && (card.suit === '♥' || card.suit === '♦')) { bg = '#fff5f5'; border = '#ef9a9a'; color = '#c62828'; }
-    else { bg = '#f5f5ff'; border = '#9fa8da'; color = '#1a237e'; }
-    pile.innerHTML = '<div style="width:80px;height:112px;background:' + bg + ';border:2px solid ' + border + ';color:' + color + ';border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px">' +
-      '<span style="font-size:1.1rem;font-weight:700">' + (card && card.isJoker ? 'J' : (card ? card.rank : '?')) + '</span>' +
-      '<span style="font-size:1.4rem">' + (card && card.isJoker ? '★' : (card ? card.suit : '?')) + '</span></div>';
+    if (!pile) return;
+    if (discard.length === 0) { pile.innerHTML = '<span style="color:#555;font-size:0.8rem">ว่าง</span>'; return; }
+    var html = '';
+    // Show last few cards
+    var show = discard.slice(-5);
+    for (var i = 0; i < show.length; i++) {
+      var card = codeToCard(show[i]);
+      var cls = handCardClass(card);
+      var rank = card.isJoker ? 'J' : (card ? card.rank : '?');
+      var suit = card.isJoker ? '★' : (card ? card.suit : '?');
+      html += '<div class="dp-card ' + cls + '">' + rank + '<br>' + suit + '</div>';
+    }
+    pile.innerHTML = html;
   } catch(e) { console.error('renderDiscardPile error:', e); }
 }
 
 function renderYourHand() {
   try {
     var container = document.getElementById('your-hand');
+    if (!container) return;
     var handCodes = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
     var hand = codesToCards(handCodes);
     var sorted = sortHand(hand);
     var html = '';
-    for (var hi = 0; hi < sorted.length; hi++) html += renderCardEl(sorted[hi]);
+    for (var hi = 0; hi < sorted.length; hi++) {
+      var card = sorted[hi];
+      var cls = handCardClass(card);
+      var rank = card.isJoker ? 'J' : card.rank;
+      var suit = card.isJoker ? '★' : card.suit;
+      var isSelected = selectedCards.indexOf(card.code) >= 0;
+      var selClass = isSelected ? ' selected' : '';
+      var clickAttr = myTurn ? 'onclick="toggleSelect(\'' + card.code + '\')"' : '';
+      var extraTag = '';
+      if (card.isSpeto) extraTag = '<span class="ctag">สเปโต</span>';
+      if (card.isJoker) extraTag = '<span class="ctag">โจ๊ก</span>';
+      html += '<div class="hand-card ' + cls + selClass + '" ' + clickAttr + '>' +
+        '<span class="cr">' + rank + '</span>' +
+        '<span class="cs">' + suit + '</span>' +
+        extraTag +
+        '</div>';
+    }
     container.innerHTML = html;
   } catch(e) { console.error('renderYourHand error:', e); }
+}
+
+function renderPlayerMeldRow() {
+  try {
+    var row = document.getElementById('player-meld-row');
+    if (!row || !currentGame) return;
+    var melds = currentGame.melds && currentGame.melds[myPlayerId] ? currentGame.melds[myPlayerId] : [];
+    if (melds.length === 0) { row.innerHTML = ''; return; }
+    var html = '';
+    for (var mi = 0; mi < melds.length; mi++) {
+      var meldCodes = melds[mi];
+      var meldHtml = '<div class="meld-set-display">';
+      for (var ci = 0; ci < meldCodes.length; ci++) {
+        var card = codeToCard(meldCodes[ci]);
+        meldHtml += renderCardSmall(card);
+      }
+      meldHtml += '</div>';
+      html += meldHtml;
+    }
+    row.innerHTML = html;
+  } catch(e) { console.error('renderPlayerMeldRow error:', e); }
 }
 
 async function renderScoreboard(game) {
   try {
     var row = document.getElementById('score-row');
+    if (!row) return;
     var _data = await db.from('rooms').select('players').eq('id', roomCode).single();
     var players = (_data.data && _data.data.players) || {};
     var scores = game.scores || {};
@@ -707,13 +798,24 @@ async function renderScoreboard(game) {
       var isYou = pid === myPlayerId;
       var pts = scores[pid] || 0;
       var meldCount = melds[pid] ? melds[pid].length : 0;
-      html += '<div class="score-item ' + (isYou ? 'highlight' : '') + '">' +
-        '<div class="sname">' + (p.name || '??') + '</div>' +
+      html += '<div class="score-item' + (isYou ? ' highlight' : '') + '">' +
+        '<div class="sname">' + (p.isBot ? '🤖 ' : '') + (p.name || '??') + '</div>' +
         '<div class="spoint" style="color:' + (isYou ? '#ffd700' : '#fff') + '">' + pts + '</div>' +
         '<div style="font-size:0.7rem;color:#888">เกิด ' + meldCount + '</div></div>';
     }
     row.innerHTML = html;
   } catch(e) { console.error('renderScoreboard error:', e); }
+}
+
+function toggleSelect(code) {
+  try {
+    var hand = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
+    if (hand.indexOf(code) === -1) return;
+    var idx = selectedCards.indexOf(code);
+    if (idx >= 0) selectedCards.splice(idx, 1); else selectedCards.push(code);
+    renderYourHand();
+    updateActionBtns();
+  } catch(e) { console.error('toggleSelect error:', e); }
 }
 
 function updateActionBtns() {
@@ -745,22 +847,27 @@ function showEndGame(data) {
     var totalScores = data.totalScores || {};
     var roundScores = data.roundScores || {};
     var players = data.players || {};
-    document.getElementById('winner-name').textContent = '🏆 ' + (players[winner] ? players[winner].name : '??') + ' ชนะ!';
+    var winnerEl = document.getElementById('winner-name');
+    if (winnerEl) winnerEl.textContent = '🏆 ' + (players[winner] ? players[winner].name : '??') + ' ชนะ!';
     var table = document.getElementById('endgame-table');
-    table.innerHTML = '<tr><th>ผู้เล่น</th><th>แต้มรอบ</th><th>รวม</th></tr>';
-    for (var pid in totalScores) {
-      var p = players[pid] || {};
-      table.innerHTML += '<tr class="' + (pid === winner ? 'winner-row' : '') + '">' +
-        '<td>' + (p.isBot ? '🤖' : '👤') + ' ' + (p.name || '??') + '</td>' +
-        '<td>' + (roundScores[pid] || 0) + '</td><td>' + totalScores[pid] + '</td></tr>';
+    if (table) {
+      table.innerHTML = '<tr><th>ผู้เล่น</th><th>แต้มรอบ</th><th>รวม</th></tr>';
+      for (var pid in totalScores) {
+        var p = players[pid] || {};
+        table.innerHTML += '<tr class="' + (pid === winner ? 'winner-row' : '') + '">' +
+          '<td>' + (p.isBot ? '🤖 ' : '👤 ') + (p.name || '??') + '</td>' +
+          '<td>' + (roundScores[pid] || 0) + '</td><td>' + totalScores[pid] + '</td></tr>';
+      }
     }
-    document.getElementById('endgame-modal').classList.add('active');
+    var modal = document.getElementById('endgame-modal');
+    if (modal) modal.classList.add('active');
   } catch(e) { console.error('showEndGame error:', e); }
 }
 
 async function playAgain() {
   try {
-    document.getElementById('endgame-modal').classList.remove('active');
+    var modal = document.getElementById('endgame-modal');
+    if (modal) modal.classList.remove('active');
     var _data = await db.from('rooms').select('players').eq('id', roomCode).single();
     if (!_data.data) return;
     var players = _data.data.players || {};
@@ -789,20 +896,24 @@ async function playAgain() {
     for (var mi = 0; mi < pids.length; mi++) { gameData.melds[pids[mi]] = []; gameData.scores[pids[mi]] = 0; }
     await db.from('rooms').update({ status: 'playing', game: gameData }).eq('id', roomCode);
     currentGame = gameData;
+    selectedCards = [];
     showScreen('game-screen');
     renderGame(gameData);
   } catch(e) { console.error('playAgain error:', e); }
 }
 
 function goHome() {
-  try { document.getElementById('endgame-modal').classList.remove('active'); } catch(e) {}
+  try { var modal = document.getElementById('endgame-modal'); if (modal) modal.classList.remove('active'); } catch(e) {}
   leaveRoom();
 }
 
 // --- INIT ---
 document.addEventListener('DOMContentLoaded', function() {
   var params = new URLSearchParams(window.location.search);
-  if (params.has('room')) document.getElementById('join-code').value = params.get('room');
+  if (params.has('room')) {
+    var codeEl = document.getElementById('join-code');
+    if (codeEl) codeEl.value = params.get('room');
+  }
   console.log('[DummyRummy] Loaded! DB:', db ? 'OK' : 'NOT YET');
 });
 
