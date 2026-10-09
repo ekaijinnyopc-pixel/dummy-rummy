@@ -296,7 +296,12 @@ async function startGame() {
       for (var di = 0; di < 7; di++) handCards.push(deck.pop().code);
       hands[playerIds[pi]] = handCards;
     }
-    var firstCard = deck.pop(); var discardPile = [firstCard];
+    var firstCard = deck.pop();
+    var discardPile = [firstCard.code];
+    // Head card bonus
+    var headCard = firstCard;
+    var headPoints = 50;
+    if (firstCard.code === '2♣' || firstCard.code === 'Q♠') headPoints = 100;
     var gameData = {
       deck: deck.map(function(c) { return c.code; }),
       hands: hands,
@@ -308,11 +313,16 @@ async function startGame() {
       melds: {},
       scores: {},
       round: 1,
-      turnStartTime: Date.now()
+      turnStartTime: Date.now(),
+      headCard: headCard.code,
+      headPoints: headPoints,
+      hasFirstMeld: {},
+      pickedFromDiscard: {}
     };
     for (var mi = 0; mi < playerIds.length; mi++) {
       gameData.melds[playerIds[mi]] = [];
       gameData.scores[playerIds[mi]] = 0;
+      gameData.hasFirstMeld[playerIds[mi]] = false;
     }
     await db.from('rooms').update({ status: 'playing', game: gameData }).eq('id', roomCode);
     currentGame = gameData;
@@ -455,22 +465,54 @@ async function handleKnockout(koId) {
     var allDeck = makeDeck();
     var allCodes = {};
     for (var di = 0; di < allDeck.length; di++) allCodes[allDeck[di].code] = allDeck[di];
+
+    // --- Calculate round scores per player ---
+    // Score = (meld points on table) - (remaining hand points)
+    // If unmeld (never melded): hand points x2 as negative
     var roundScores = {};
     for (var pid in game.hands) {
-      var pts = 0;
-      for (var ci = 0; ci < game.hands[pid].length; ci++) {
-        var c = allCodes[game.hands[pid][ci]];
-        if (c) pts += cardPoints(c);
+      // Meld points
+      var meldPts = 0;
+      var melds = game.melds && game.melds[pid] ? game.melds[pid] : [];
+      for (var mi = 0; mi < melds.length; mi++) {
+        var meldCodes = melds[mi];
+        for (var ci = 0; ci < meldCodes.length; ci++) {
+          var c = codeToCard(meldCodes[ci]);
+          if (c) meldPts += cardPoints(c);
+        }
       }
-      roundScores[pid] = pts;
+      // Remaining hand points
+      var handPts = 0;
+      var handCodes = game.hands[pid] || [];
+      for (var ci = 0; ci < handCodes.length; ci++) {
+        var c = codeToCard(handCodes[ci]);
+        if (c) handPts += cardPoints(c);
+      }
+      // Knocker's hand is empty (they knocked), score = 0 for remaining
+      if (pid === koId) handPts = 0;
+      // Unmeld penalty: if never melded, hand points x2
+      var hasMeld = game.hasFirstMeld && game.hasFirstMeld[pid];
+      if (!hasMeld && pid !== koId) handPts = handPts * 2;  // unmeld: double penalty
+      roundScores[pid] = meldPts - handPts;
     }
-    roundScores[koId] = 0;
+
+    // Knocker gets knock bonus: +50 (normal knock) or +100 (dark knock)
+    var hasMeldBeforeKnock = game.hasFirstMeld && game.hasFirstMeld[koId];
+    var knockBonus = hasMeldBeforeKnock ? 50 : 100;  // +100 if dark knock
+    roundScores[koId] += knockBonus;
+
+    // Head card bonus for knocker
+    if (game.headPoints) roundScores[koId] += game.headPoints;
+
+    // Cumulative scores
     var prevScores = (_data.data.game && _data.data.game.scores) || {};
     var totalScores = {};
     for (var ti = 0; ti < game.playerOrder.length; ti++) {
       var tpid = game.playerOrder[ti];
-      totalScores[tpid] = (prevScores[tpid] || 0) + (roundScores[tpid] || 0);
+      totalScores[tpid] = (prevScores[tpid] || 0) + roundScores[tpid];
     }
+
+    // Check for game winner (500+ points)
     var winner = null;
     for (var wid in totalScores) {
       if (totalScores[wid] >= 500) {
@@ -479,18 +521,21 @@ async function handleKnockout(koId) {
         winner = winPid; break;
       }
     }
+
     await db.from('rooms').update({ status: 'ended', winner: winner, totalScores: totalScores }).eq('id', roomCode);
-    showEndGame({ winner: winner, totalScores: totalScores, roundScores: roundScores, players: players });
+    showEndGame({ winner: winner, totalScores: totalScores, roundScores: roundScores, players: players, knockBonus: knockBonus });
   } catch(e) { console.error('handleKnockout error:', e); }
 }
 
 // --- BOT ---
 async function botPlay(botId) {
   try {
-    console.log('[Bot] botPlay called for', botId, '| turnPlayerId:', currentGame ? currentGame.turnPlayerId : 'null', 'status:', currentGame ? currentGame.status : 'null');
-    if (!currentGame || currentGame.status !== 'playing') { console.log('[Bot] Early return: no game or not playing'); return; }
-    if (currentGame.turnPlayerId !== botId) { console.log('[Bot] Early return: not my turn'); return; }
+    console.log('[Bot] botPlay for', botId);
+    if (!currentGame || currentGame.status !== 'playing') return;
+    if (currentGame.turnPlayerId !== botId) return;
     await delay(600);
+
+    // DRAW phase
     var hand = codesToCards(currentGame.hands[botId] || []);
     var deck = currentGame.deck.slice();
     if (deck.length > 0) {
@@ -500,26 +545,54 @@ async function botPlay(botId) {
       newHands[botId] = hand.map(function(c) { return c.code; });
       currentGame = Object.assign({}, currentGame, { deck: deck, hands: newHands, phase: 'action', turnStartTime: Date.now() });
       await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-      renderGame(currentGame);  // Force local render
-    renderDiscardPile(currentGame);  // Update discard pile since postgres_changes won't echo to same client
+      renderGame(currentGame);
       await delay(600);
     }
+
+    // ACTION phase: try to meld
+    var hasFirstMeld = currentGame.hasFirstMeld && currentGame.hasFirstMeld[botId];
+    if (!hasFirstMeld) {
+      // Try to find a valid meld
+      var validMelds = findMelds(hand);
+      if (validMelds.length > 0) {
+        var meld = validMelds[0];  // Take first valid meld
+        var meldCodes = meld.cards.map(function(c) { return c.code; });
+        var newHand2 = hand.filter(function(c) { return meldCodes.indexOf(c.code) === -1; });
+        var newMelds = Object.assign({}, currentGame.melds || {});
+        newMelds[botId] = (newMelds[botId] || []).concat([meldCodes]);
+        var newHasMeld = Object.assign({}, currentGame.hasFirstMeld || {});
+        newHasMeld[botId] = true;
+        var newHands2 = Object.assign({}, currentGame.hands);
+        newHands2[botId] = newHand2.map(function(c) { return c.code; });
+        currentGame = Object.assign({}, currentGame, { hands: newHands2, melds: newMelds, hasFirstMeld: newHasMeld });
+        await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+        renderGame(currentGame);
+        await delay(600);
+        hand = newHand2;
+      }
+    }
+
+    // DISCARD phase
     if (hand.length > 0) {
+      // Pick a safe card to discard (not a potential meld card)
       var discard = hand[hand.length - 1];
+      // Simple strategy: discard last card in sorted hand
       var newHand = hand.filter(function(c) { return c.code !== discard.code; });
       var newDiscard = currentGame.discardPile.concat([discard]);
       if (newHand.length === 0) {
+        // KNOCK!
         var finalHands = Object.assign({}, currentGame.hands);
         finalHands[botId] = [];
         await db.from('rooms').update({ game: Object.assign({}, currentGame, { hands: finalHands, discardPile: newDiscard }) }).eq('id', roomCode);
+        renderGame(currentGame);
         await handleKnockout(botId); return;
       }
-      var newHands2 = Object.assign({}, currentGame.hands);
-      newHands2[botId] = newHand.map(function(c) { return c.code; });
-      currentGame = Object.assign({}, currentGame, { hands: newHands2, discardPile: newDiscard, phase: 'draw' });
+      var newHands3 = Object.assign({}, currentGame.hands);
+      newHands3[botId] = newHand.map(function(c) { return c.code; });
+      currentGame = Object.assign({}, currentGame, { hands: newHands3, discardPile: newDiscard, phase: 'draw' });
       await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-      renderGame(currentGame);  // Force local render
-    renderDiscardPile(currentGame);  // Update discard pile
+      renderGame(currentGame);
+      renderDiscardPile(currentGame);
       await delay(500);
     }
     await advanceTurn();
@@ -638,7 +711,12 @@ async function confirmMeld() {
     newMelds[myPlayerId] = allMelds;
     var newHands = Object.assign({}, currentGame.hands);
     newHands[myPlayerId] = newHandCodes;
-    currentGame = Object.assign({}, currentGame, { hands: newHands, melds: newMelds });
+    var newHasFirstMeld = Object.assign({}, currentGame.hasFirstMeld || {});
+    if (!newHasFirstMeld[myPlayerId]) {
+      newHasFirstMeld[myPlayerId] = true;
+      notify('🎉 เกิดสำเร็จ! ต่อไปสามารถฝากไพ่ได้!');
+    }
+    currentGame = Object.assign({}, currentGame, { hands: newHands, melds: newMelds, hasFirstMeld: newHasFirstMeld });
     await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
     notify('🃏 เกิด ' + (meld.type === 'set' ? 'ตอง' : 'เรียง') + ' สำเร็จ!');
     closeMeldModal();
@@ -898,16 +976,19 @@ function showEndGame(data) {
     var totalScores = data.totalScores || {};
     var roundScores = data.roundScores || {};
     var players = data.players || {};
+    var knockBonus = data.knockBonus || 0;
     var winnerEl = document.getElementById('winner-name');
     if (winnerEl) winnerEl.textContent = '🏆 ' + (players[winner] ? players[winner].name : '??') + ' ชนะ!';
     var table = document.getElementById('endgame-table');
     if (table) {
-      table.innerHTML = '<tr><th>ผู้เล่น</th><th>แต้มรอบ</th><th>รวม</th></tr>';
+      table.innerHTML = '<tr><th>ผู้เล่น</th><th>แต้มรอบนี้</th><th>รวมสะสม</th></tr>';
       for (var pid in totalScores) {
         var p = players[pid] || {};
+        var isKnocker = roundScores[pid] >= (knockBonus || 0);
+        var rs = roundScores[pid] || 0;
         table.innerHTML += '<tr class="' + (pid === winner ? 'winner-row' : '') + '">' +
-          '<td>' + (p.isBot ? '🤖 ' : '👤 ') + (p.name || '??') + '</td>' +
-          '<td>' + (roundScores[pid] || 0) + '</td><td>' + totalScores[pid] + '</td></tr>';
+          '<td>' + (p.isBot ? '🤖 ' : '👤 ') + (p.name || '??') + (pid === winner ? ' 👑' : '') + '</td>' +
+          '<td>' + (rs > 0 ? '+' : '') + rs + '</td><td>' + (totalScores[pid] > 0 ? '+' : '') + totalScores[pid] + '</td></tr>';
       }
     }
     var modal = document.getElementById('endgame-modal');
@@ -931,10 +1012,13 @@ async function playAgain() {
       for (var di = 0; di < 7; di++) h.push(deck.pop().code);
       hands[pids[pi]] = h;
     }
+    var fc = deck.pop();
+    var hp = 50;
+    if (fc.code === '2♣' || fc.code === 'Q♠') hp = 100;
     var gameData = {
       deck: deck.map(function(c) { return c.code; }),
       hands: hands,
-      discardPile: [deck.pop().code],
+      discardPile: [fc.code],
       turnPlayerId: pids[0],
       playerOrder: pids,
       phase: 'draw',
@@ -942,9 +1026,13 @@ async function playAgain() {
       melds: {},
       scores: {},
       round: (currentGame ? (currentGame.round || 1) : 1) + 1,
-      turnStartTime: Date.now()
+      turnStartTime: Date.now(),
+      headCard: fc.code,
+      headPoints: hp,
+      hasFirstMeld: {},
+      pickedFromDiscard: {}
     };
-    for (var mi = 0; mi < pids.length; mi++) { gameData.melds[pids[mi]] = []; gameData.scores[pids[mi]] = 0; }
+    for (var mi = 0; mi < pids.length; mi++) { gameData.melds[pids[mi]] = []; gameData.scores[pids[mi]] = 0; gameData.hasFirstMeld[pids[mi]] = false; }
     await db.from('rooms').update({ status: 'playing', game: gameData }).eq('id', roomCode);
     currentGame = gameData;
     selectedCards = [];
