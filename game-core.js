@@ -41,10 +41,7 @@ function makeDeck() {
       deck.push({ suit: SUITS[si], rank: RANKS[ri], code: RANKS[ri] + SUITS[si] });
     }
   }
-  deck.push({ suit: '♣', rank: '2', code: '2♣', isSpeto: true });
-  deck.push({ suit: '♠', rank: 'Q', code: 'Q♠', isSpeto: true });
-  deck.push({ suit: '🃏', rank: 'JOKER', code: 'JOKER1', isJoker: true });
-  deck.push({ suit: '🃏', rank: 'JOKER', code: 'JOKER2', isJoker: true });
+  // NO jokers - standard 52 cards only
   return deck;
 }
 
@@ -59,16 +56,15 @@ function shuffle(arr) {
 
 function cardPoints(card) {
   if (!card) return 0;
-  if (card.isJoker || card.isSpeto) return 50;
+  if (card.isSpeto) return 50;
   if (card.rank === 'A') return 15;
   if (['J','Q','K'].indexOf(card.rank) >= 0) return 10;
-  return parseInt(card.rank) || 0;
+  if (['2','3','4','5','6','7','8','9'].indexOf(card.rank) >= 0) return 5;
+  return 0;
 }
 
 function sortHand(hand) {
   return hand.slice().sort(function(a, b) {
-    if (a.isJoker && !b.isJoker) return 1;
-    if (!a.isJoker && b.isJoker) return -1;
     if (a.isSpeto && !b.isSpeto) return 1;
     if (!a.isSpeto && b.isSpeto) return -1;
     var suitOrder = { '♠':0, '♥':1, '♦':2, '♣':3 };
@@ -87,8 +83,7 @@ function codeToCard(code) {
   // Accept card object (pass-through)
   if (typeof code === 'object' && code !== null && code.code) return code;
   // Handle string codes
-  if (code === 'JOKER1') return { suit: '🃏', rank: 'JOKER', code: 'JOKER1', isJoker: true };
-  if (code === 'JOKER2') return { suit: '🃏', rank: 'JOKER', code: 'JOKER2', isJoker: true };
+  // No jokers
   if (code === '2♣') return { suit: '♣', rank: '2', code: '2♣', isSpeto: true };
   if (code === 'Q♠') return { suit: '♠', rank: 'Q', code: 'Q♠', isSpeto: true };
   for (var si = 0; si < SUITS.length; si++) {
@@ -150,7 +145,6 @@ function showScreen(id) {
 
 function miniCardClass(card) {
   if (!card) return 'black';
-  if (card.isJoker) return 'joker';
   if (card.isSpeto) return 'speto';
   if (card.suit === '♥' || card.suit === '♦') return 'red';
   return 'black';
@@ -159,14 +153,13 @@ function miniCardClass(card) {
 function renderMiniCard(card) {
   if (!card) return '';
   var cls = miniCardClass(card);
-  var rank = card.isJoker ? 'J' : card.rank;
-  var suit = card.isJoker ? '★' : card.suit;
+  var rank = card.rank;
+  var suit = card.suit;
   return '<div class="mini-card ' + cls + '">' + rank + '<br>' + suit + '</div>';
 }
 
 function handCardClass(card) {
   if (!card) return 'black';
-  if (card.isJoker) return 'joker';
   if (card.isSpeto) return 'speto';
   if (card.suit === '♥' || card.suit === '♦') return 'red';
   return 'black';
@@ -362,8 +355,8 @@ async function drawCard() {
         var card = sorted[hi];
         var cls = handCardClass(card);
         html += '<div class="hand-card ' + cls + '" onclick="toggleSelect(\'' + card.code + '\')">' +
-          '<span class="cr">' + (card.isJoker ? 'J' : card.rank) + '</span>' +
-          '<span class="cs">' + (card.isJoker ? '★' : card.suit) + '</span></div>';
+          '<span class="cr">' + (card.rank) + '</span>' +
+          '<span class="cs">' + (card.suit) + '</span></div>';
       }
       myHandDiv.innerHTML = html;
     }
@@ -393,8 +386,8 @@ async function pickDiscard() {
         var card2 = sorted2[hi2];
         var cls2 = handCardClass(card2);
         html2 += '<div class="hand-card ' + cls2 + '" onclick="toggleSelect(\'' + card2.code + '\')">' +
-          '<span class="cr">' + (card2.isJoker ? 'J' : card2.rank) + '</span>' +
-          '<span class="cs">' + (card2.isJoker ? '★' : card2.suit) + '</span></div>';
+          '<span class="cr">' + (card2.rank) + '</span>' +
+          '<span class="cs">' + (card2.suit) + '</span></div>';
       }
       myHandDiv2.innerHTML = html2;
     }
@@ -535,8 +528,8 @@ async function botPlay(botId) {
 
 // --- MELD ---
 function findMelds(hand) {
-  var normals = hand.filter(function(c) { return !c.isJoker && !c.isSpeto; });
-  var jokers = hand.filter(function(c) { return c.isJoker; });
+  var normals = hand.filter(function(c) { return !c.isSpeto; });
+  var jokers = []; // No jokers in standard Dummy Rummy
   var melds = [];
   var byRank = {};
   for (var ni = 0; ni < normals.length; ni++) {
@@ -591,8 +584,8 @@ function closeMeldModal() {
 function renderCardSmall(card) {
   if (!card) return '';
   var cls = handCardClass(card);
-  var rank = card.isJoker ? 'J' : card.rank;
-  var suit = card.isJoker ? '★' : card.suit;
+  var rank = card.rank;
+  var suit = card.suit;
   return '<div class="ms-card ' + cls + '">' + rank + '<br>' + suit + '</div>';
 }
 
@@ -611,7 +604,7 @@ function renderMeldOptions() {
       var meld = melds[mi];
       var cardsHtml = '';
       for (var ci = 0; ci < meld.cards.length; ci++) cardsHtml += renderCardSmall(meld.cards[ci]);
-      html += '<div class="meld-set" onclick="selectMeld(' + mi + ')">' + cardsHtml + '<div style="width:100%;font-size:0.7rem;color:#888;text-align:center;margin-top:4px">' + (meld.type === 'set' ? 'ตอง' : 'เรียง') + (meld.jokerUsed ? ' ✨' : '') + '</div></div>';
+      html += '<div class="meld-set" onclick="selectMeld(' + mi + ')">' + cardsHtml + '<div style="width:100%;font-size:0.7rem;color:#888;text-align:center;margin-top:4px">' + (meld.type === 'set' ? 'ตอง' : 'เรียง') + '</div></div>';
     }
     html += '</div>';
     container.innerHTML = html;
@@ -784,8 +777,8 @@ function renderDiscardPile(game) {
       var card = codeToCard(show[i]);
       if (!card) { console.warn('[Discard] Unknown card code:', show[i]); continue; }
       var cls = handCardClass(card);
-      var rank = card.isJoker ? 'J' : card.rank;
-      var suit = card.isJoker ? '★' : card.suit;
+      var rank = card.rank;
+      var suit = card.suit;
       html += '<div class="dp-card ' + cls + '">' + rank + '<br>' + suit + '</div>';
     }
     pile.innerHTML = html;
@@ -803,14 +796,13 @@ function renderYourHand() {
     for (var hi = 0; hi < sorted.length; hi++) {
       var card = sorted[hi];
       var cls = handCardClass(card);
-      var rank = card.isJoker ? 'J' : card.rank;
-      var suit = card.isJoker ? '★' : card.suit;
+      var rank = card.rank;
+      var suit = card.suit;
       var isSelected = selectedCards.indexOf(card.code) >= 0;
       var selClass = isSelected ? ' selected' : '';
       var clickAttr = myTurn ? 'onclick="toggleSelect(\'' + card.code + '\')"' : '';
       var extraTag = '';
       if (card.isSpeto) extraTag = '<span class="ctag">สเปโต</span>';
-      if (card.isJoker) extraTag = '<span class="ctag">โจ๊ก</span>';
       html += '<div class="hand-card ' + cls + selClass + '" ' + clickAttr + '>' +
         '<span class="cr">' + rank + '</span>' +
         '<span class="cs">' + suit + '</span>' +
@@ -1001,6 +993,16 @@ document.addEventListener('DOMContentLoaded', function() {
     if (codeEl) codeEl.value = params.get('room');
   }
   console.log('[DummyRummy] Loaded! DB:', db ? 'OK' : 'NOT YET');
+// Cleanup old rooms (>30 min) on startup
+if (db) {
+  (async function() {
+    try {
+      var thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      var _d = await db.from('rooms').delete().lt('updated_at', thirtyMinAgo).neq('status', 'playing');
+      console.log('[Cleanup] Removed old inactive rooms');
+    } catch(e) { console.log('[Cleanup] Skipped:', e.message); }
+  })();
+}
 });
 
 console.log('[DummyRummy] Script parsing OK!');
