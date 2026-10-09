@@ -158,7 +158,8 @@ function renderCardEl(card) {
   for (var i = 0; i < selectedCards.length; i++) { if (selectedCards[i] === card.code) { sel = true; break; } }
   var selStyle = sel ? 'box-shadow:0 0 14px rgba(255,215,0,0.7);transform:translateY(-12px)' : '';
   var cursor = myTurn ? 'cursor:pointer' : '';
-  return '<div onclick="' + (myTurn ? "toggleSelect('" + card.code + '")" : '') + '" style="width:60px;height:84px;background:' + bg + ';border:2px solid ' + (sel ? '#ffd700' : border) + ';color:' + color + ';border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;transition:all 0.15s;' + selStyle + ';' + cursor + '">' +
+  var onclickAttr = myTurn ? ('toggleSelect(\u0027' + card.code + '\u0027)') : '';
+  return '<div ' + (myTurn ? 'data-code="' + card.code + '" onclick="toggleSelect(\u0027' + card.code + '\u0027)"' : '') + ' style="width:60px;height:84px;background:' + bg + ';border:2px solid ' + (sel ? '#ffd700' : border) + ';color:' + color + ';border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;transition:all 0.15s;' + selStyle + ';' + cursor + '">' +
     '<span style="font-size:1rem;font-weight:700">' + rank + '</span>' +
     '<span style="font-size:1.3rem">' + suit + '</span>' +
     (card.isSpeto ? '<span style="font-size:0.5rem;color:#ffd700">สเปโต</span>' : '') +
