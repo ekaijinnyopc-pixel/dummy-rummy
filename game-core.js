@@ -192,6 +192,7 @@ function confetti() {
 async function setupRealtime(rid) {
   try {
     if (realtimeChannel) { realtimeChannel.unsubscribe(); realtimeChannel = null; }
+    stopPolling();
     realtimeChannel = db.channel('room-' + rid);
     realtimeChannel.on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: 'id=eq.' + rid }, function(payload) {
       try {
@@ -209,6 +210,7 @@ async function setupRealtime(rid) {
     });
     await realtimeChannel.subscribe();
     console.log('[Realtime] Subscribed to room:', rid);
+    startPolling(rid);
   } catch(e) { console.error('[Realtime] Setup error:', e); notify('❌ เชื่อมต่อ realtime ไม่ได้'); }
 }
 
@@ -277,6 +279,7 @@ async function leaveRoom() {
       else await db.from('rooms').update({ players: players }).eq('id', roomCode);
     }
     if (realtimeChannel) { realtimeChannel.unsubscribe(); realtimeChannel = null; }
+    stopPolling();
     roomCode = null; myPlayerId = null; currentGame = null; selectedCards = [];
     showScreen('home-screen');
   } catch(e) { console.error('leaveRoom error:', e); }
@@ -320,6 +323,19 @@ async function startGame() {
     showScreen('game-screen');
     console.log('[Game] Started! playerOrder:', gameData.playerOrder, 'first turn:', gameData.turnPlayerId);
     renderGame(gameData);
+    // Safety: if bot doesn't move in 5s, force advance
+    setTimeout(function() {
+      if (currentGame && currentGame.status === 'playing' && currentGame.turnPlayerId !== myPlayerId) {
+        console.log('[Safety] Bot stalled, checking if advance needed...');
+        var order = currentGame.playerOrder || [];
+        var idx = order.indexOf(currentGame.turnPlayerId);
+        // Check if we need to manually trigger advance
+        if (currentGame.turnPlayerId && currentGame.turnPlayerId.indexOf('bot_') === 0) {
+          // Bot is stuck - manually trigger
+          botPlay(currentGame.turnPlayerId);
+        }
+      }
+    }, 5000);
   } catch(e) { console.error('startGame error:', e); notify('❌ ผิดพลาด: ' + e.message); }
 }
 
@@ -381,8 +397,10 @@ async function advanceTurn() {
     var idx = order.indexOf(currentGame.turnPlayerId);
     var nextIdx = (idx + 1) % order.length;
     var nextPid = order[nextIdx];
-    currentGame = Object.assign({}, currentGame, { turnPlayerId: nextPid, phase: 'draw', turnStartTime: Date.now() });
+    var updatedGame = Object.assign({}, currentGame, { turnPlayerId: nextPid, phase: 'draw', turnStartTime: Date.now() });
+    currentGame = updatedGame;
     await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+    // Force local render since postgres_changes won't fire for our own client
     renderGame(currentGame);
     var _data = await db.from('rooms').select('players').eq('id', roomCode).single();
     var nextPlayer = _data.data && _data.data.players ? _data.data.players[nextPid] : null;
@@ -453,6 +471,7 @@ async function botPlay(botId) {
       newHands[botId] = hand.map(function(c) { return c.code; });
       currentGame = Object.assign({}, currentGame, { deck: deck, hands: newHands, phase: 'action', turnStartTime: Date.now() });
       await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+      renderGame(currentGame);  // Force local render since postgres_changes won't echo to same client
       await delay(600);
     }
     if (hand.length > 0) {
@@ -469,6 +488,7 @@ async function botPlay(botId) {
       newHands2[botId] = newHand.map(function(c) { return c.code; });
       currentGame = Object.assign({}, currentGame, { hands: newHands2, discardPile: newDiscard, phase: 'draw' });
       await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+      renderGame(currentGame);  // Force local render
       await delay(500);
     }
     await advanceTurn();
@@ -908,6 +928,33 @@ function goHome() {
 }
 
 // --- INIT ---
+var pollInterval = null;
+
+function startPolling(rid) {
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(async function() {
+    if (!roomCode || !currentGame) { clearInterval(pollInterval); return; }
+    try {
+      var _data = await db.from('rooms').select('*').eq('id', rid).single();
+      if (_data.data && _data.data.game) {
+        var remoteGame = _data.data;
+        // Only update if different from local state
+        if (JSON.stringify(remoteGame.game) !== JSON.stringify(currentGame)) {
+          console.log('[Poll] Remote game state changed, updating local');
+          currentGame = remoteGame.game;
+          if (remoteGame.status === 'playing') renderGame(currentGame);
+          else if (remoteGame.status === 'ended') showEndGame({ winner: remoteGame.winner, totalScores: remoteGame.totalScores, players: remoteGame.players });
+        }
+      }
+    } catch(e) {}
+  }, 2000);
+  console.log('[Poll] Started polling for room:', rid);
+}
+
+function stopPolling() {
+  if (pollInterval) { clearInterval(pollInterval); pollInterval = null; console.log('[Poll] Stopped'); }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
   var params = new URLSearchParams(window.location.search);
   if (params.has('room')) {
