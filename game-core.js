@@ -350,8 +350,22 @@ async function drawCard() {
     newHands[myPlayerId] = (newHands[myPlayerId] || []).concat([drawn.code]);
     currentGame = Object.assign({}, currentGame, { deck: deck, hands: newHands, phase: 'action', turnStartTime: Date.now() });
     await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-    renderYourHand();
+    // Update local hand display immediately
+    var myHandDiv = document.getElementById('your-hand');
+    if (myHandDiv) {
+      var sorted = sortHand(codesToCards(newHands[myPlayerId] || []));
+      var html = '';
+      for (var hi = 0; hi < sorted.length; hi++) {
+        var card = sorted[hi];
+        var cls = handCardClass(card);
+        html += '<div class="hand-card ' + cls + '" onclick="toggleSelect(\'' + card.code + '\')">' +
+          '<span class="cr">' + (card.isJoker ? 'J' : card.rank) + '</span>' +
+          '<span class="cs">' + (card.isJoker ? '★' : card.suit) + '</span></div>';
+      }
+      myHandDiv.innerHTML = html;
+    }
     updateActionBtns();
+    renderDiscardPile(currentGame);  // Update discard pile
     var card = codeToCard(drawn.code);
     notify('📦 จั่วได้: ' + (card ? card.rank + card.suit : drawn.code));
   } catch(e) { console.error('drawCard error:', e); }
@@ -367,7 +381,20 @@ async function pickDiscard() {
     newHands[myPlayerId] = (newHands[myPlayerId] || []).concat([top]);
     currentGame = Object.assign({}, currentGame, { hands: newHands, discardPile: discard, phase: 'action', turnStartTime: Date.now() });
     await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-    renderYourHand();
+    // Update local hand display immediately
+    var myHandDiv2 = document.getElementById('your-hand');
+    if (myHandDiv2) {
+      var sorted2 = sortHand(codesToCards(newHands[myPlayerId] || []));
+      var html2 = '';
+      for (var hi2 = 0; hi2 < sorted2.length; hi2++) {
+        var card2 = sorted2[hi2];
+        var cls2 = handCardClass(card2);
+        html2 += '<div class="hand-card ' + cls2 + '" onclick="toggleSelect(\'' + card2.code + '\')">' +
+          '<span class="cr">' + (card2.isJoker ? 'J' : card2.rank) + '</span>' +
+          '<span class="cs">' + (card2.isJoker ? '★' : card2.suit) + '</span></div>';
+      }
+      myHandDiv2.innerHTML = html2;
+    }
     updateActionBtns();
     var topCard = codeToCard(top);
     notify('🗑️ หยิบ: ' + (topCard ? topCard.rank + topCard.suit : top));
@@ -471,7 +498,8 @@ async function botPlay(botId) {
       newHands[botId] = hand.map(function(c) { return c.code; });
       currentGame = Object.assign({}, currentGame, { deck: deck, hands: newHands, phase: 'action', turnStartTime: Date.now() });
       await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-      renderGame(currentGame);  // Force local render since postgres_changes won't echo to same client
+      renderGame(currentGame);  // Force local render
+    renderDiscardPile(currentGame);  // Update discard pile since postgres_changes won't echo to same client
       await delay(600);
     }
     if (hand.length > 0) {
@@ -489,6 +517,7 @@ async function botPlay(botId) {
       currentGame = Object.assign({}, currentGame, { hands: newHands2, discardPile: newDiscard, phase: 'draw' });
       await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
       renderGame(currentGame);  // Force local render
+    renderDiscardPile(currentGame);  // Update discard pile
       await delay(500);
     }
     await advanceTurn();
@@ -741,7 +770,7 @@ function renderDiscardPile(game) {
     if (discard.length === 0) { pile.innerHTML = '<span style="color:#555;font-size:0.8rem">ว่าง</span>'; return; }
     var html = '';
     // Show last few cards
-    var show = discard.slice(-5);
+    var show = discard.slice();
     for (var i = 0; i < show.length; i++) {
       var card = codeToCard(show[i]);
       var cls = handCardClass(card);
