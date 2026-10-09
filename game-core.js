@@ -773,9 +773,10 @@ function renderDiscardPile(game) {
     var show = discard.slice();
     for (var i = 0; i < show.length; i++) {
       var card = codeToCard(show[i]);
+      if (!card) { console.warn('[Discard] Unknown card code:', show[i]); continue; }
       var cls = handCardClass(card);
-      var rank = card.isJoker ? 'J' : (card ? card.rank : '?');
-      var suit = card.isJoker ? '★' : (card ? card.suit : '?');
+      var rank = card.isJoker ? 'J' : card.rank;
+      var suit = card.isJoker ? '★' : card.suit;
       html += '<div class="dp-card ' + cls + '">' + rank + '<br>' + suit + '</div>';
     }
     pile.innerHTML = html;
