@@ -10,6 +10,23 @@ ALTER TABLE rooms
 ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
 
 -- ============================================================
+-- 1b. RLS policies — ต้องมีก่อนใช้งาน
+-- ============================================================
+ALTER TABLE rooms ENABLE ROW LEVEL SECURITY;
+
+-- ใครก็ได้เลือกดูห้องได้ (select ทั่วไป)
+CREATE POLICY "public_read" ON rooms FOR SELECT USING (true);
+
+-- ใครก็ได้สร้างห้อง (insert)
+CREATE POLICY "public_insert" ON rooms FOR INSERT WITH CHECK (true);
+
+-- ใครก็ได้อัปเดตห้อง (update)
+CREATE POLICY "public_update" ON rooms FOR UPDATE USING (true);
+
+-- ใครก็ได้ลบห้อง (delete)
+CREATE POLICY "public_delete" ON rooms FOR DELETE USING (true);
+
+-- ============================================================
 -- 2. สร้าง play_turn() RPC function
 -- ทุก action ต้องผ่านฟังก์ชันนี้เพื่อ lock + เช็ค turn ก่อนอัปเดต
 -- ============================================================

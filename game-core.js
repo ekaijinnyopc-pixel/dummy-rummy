@@ -1,8 +1,8 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v26
-// - Pure human game (no auto-bots)
-// - Select 2/3/4 human players from dropdown
-// - ทดสอบเกมคนก่อน → ค่อยเพิ่มบอททีหลัง
+// 🃏 DUMMY RUMMY — game-core.js v27
+// - ส่ง totalPlayers ไปกับ renderLobby() ทุกจุด
+// - ช่องว่างใน lobby แสดง "รอคนที่ X..." ถูกต้อง
+// - รอ Supabase RLS policies รัน → แก้ 406 error
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -258,7 +258,7 @@ function findAllLayoffs(handCodes, game) {
 }
 
 // --- GAME STATE ---
-var myPlayerId = null;
+var myPlayerId = null; var totalPlayers = 4;
 var myName = '';
 var roomCode = null;
 var realtimeChannel = null;
@@ -421,7 +421,10 @@ async function setupRealtime(rid) {
         var room = payload.new;
         if (!room) { console.log('[RT] no room data'); return; }
         console.log('[RT] received:', room.status, '| turn:', room.game ? room.game.turnPlayerId : 'no game');
-        if (room.status === 'lobby') renderLobby(room.players || {});
+        if (room.status === 'lobby') {
+          totalPlayers = room.totalPlayers || 4;
+          renderLobby(room.players || {}, totalPlayers);
+        }
         else if (room.status === 'playing' && room.game) {
           currentGame = room.game;
           showScreen('game-screen');
@@ -462,12 +465,12 @@ async function createRoom() {
     myPlayerId = 'p_' + Math.random().toString(36).substr(2, 9);
     var players = {};
     players[myPlayerId] = { id: myPlayerId, name: name, isBot: false, isHost: true };
-    var _data = await db.from('rooms').upsert({ id: roomCode, code: roomCode, players: players, status: 'lobby' });
+    var _data = await db.from('rooms').upsert({ id: roomCode, code: roomCode, players: players, status: 'lobby', totalPlayers: totalPlayers });
     if (_data.error) { notify('❌ สร้างห้องไม่สำเร็จ'); return; }
     showScreen('lobby-screen');
     document.getElementById('display-room-code').textContent = roomCode;
     await setupRealtime(roomCode);
-    renderLobby(players);
+    renderLobby(players, totalPlayers);
     notify('✅ สร้างห้องสำเร็จ!');
   } catch(e) { console.error('createRoom error:', e); notify('❌ ผิดพลาด: ' + e.message); }
 }
@@ -487,14 +490,15 @@ async function joinRoom() {
     if (room.status === 'playing') { notify('❌ เกมเริ่มแล้ว'); return; }
     var players = Object.assign({}, room.players || {});
     var keys = Object.keys(players);
-    if (keys.length >= 4) { notify('❌ ห้องเต็มแล้ว'); return; }
+    if (keys.length >= (room.totalPlayers || 4)) { notify('❌ ห้องเต็มแล้ว'); return; }
     players[myPlayerId] = { id: myPlayerId, name: name, isBot: false, isHost: false };
     await db.from('rooms').update({ players: players }).eq('id', code);
     roomCode = code;
+    totalPlayers = room.totalPlayers || 4;
     showScreen('lobby-screen');
     document.getElementById('display-room-code').textContent = code;
     await setupRealtime(code);
-    renderLobby(players);
+    renderLobby(players, totalPlayers);
     notify('✅ เข้าห้องสำเร็จ!');
   } catch(e) { console.error('joinRoom error:', e); notify('❌ ผิดพลาด: ' + e.message); }
 }
@@ -1094,8 +1098,9 @@ async function selectLayoff(lt) {
 }
 
 // --- RENDERING ---
-async function renderLobby(players) {
+async function renderLobby(players, maxPlayers) {
   try {
+    maxPlayers = maxPlayers || 4;
     var list = document.getElementById('player-list');
     var btnStart = document.getElementById('btn-start');
     var arr = Object.values(players || {});
@@ -1108,7 +1113,14 @@ async function renderLobby(players) {
         '<div class="pname">' + p.name + '</div>' +
         '<div class="ptype">' + (isYou ? '(คุณ)' : p.isBot ? 'AI' : 'ผู้เล่น') + '</div></div>';
     }
-    for (var ei = arr.length; ei < 4; ei++) html += '<div class="player-slot"><div class="pemoji">❌</div><div class="pname">ไม่มี</div><div class="ptype">ไม่มีผู้เล่น</div></div>';
+    var nextNum = arr.length + 1;
+    for (var ei = arr.length; ei < maxPlayers; ei++) {
+      html += '<div class="player-slot"><div class="pemoji">❓</div><div class="pname">รอผู้เล่น...</div><div class="ptype">รอคนที่ ' + nextNum + '...</div></div>';
+      nextNum++;
+    }
+    for (var ei = maxPlayers; ei < 4; ei++) {
+      html += '<div class="player-slot"><div class="pemoji">❌</div><div class="pname">ไม่มี</div><div class="ptype">ไม่มีผู้เล่น</div></div>';
+    }
     list.innerHTML = html;
     var humanCount = arr.filter(function(p){ return !p.isBot; }).length;
     if (btnStart) btnStart.style.display = humanCount >= 1 ? 'block' : 'none';
@@ -1443,7 +1455,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v26 Loaded!');
+  console.log('[DummyRummy] v27 Loaded!');
   // Cleanup: delete rooms still in lobby (never started) — skip 'playing' rooms
   if (db) {
     (async function() {
