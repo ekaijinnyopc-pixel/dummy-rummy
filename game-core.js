@@ -313,7 +313,7 @@ async function rpcPlayTurn(action, opts) {
     if (data.game) {
       currentGame = data.game;
       currentRoomVersion = (data.game.version || currentRoomVersion + 1);
-      await db.from('rooms').update({ game: currentGame, version: currentRoomVersion }).eq('id', roomCode).catch(function(){});
+      await db.from('rooms').update({ game: currentGame, version: currentRoomVersion }).eq('id', roomCode);
     }
     return data;
   } catch(e) {
