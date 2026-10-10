@@ -1,8 +1,8 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v27
-// - ส่ง totalPlayers ไปกับ renderLobby() ทุกจุด
-// - ช่องว่างใน lobby แสดง "รอคนที่ X..." ถูกต้อง
-// - รอ Supabase RLS policies รัน → แก้ 406 error
+// 🃏 DUMMY RUMMY — game-core.js v28
+// - ถอด totalPlayers ออกจาก upsert → ตารางยังไม่มี column นี้
+// - Lobby ยังแสดงจำนวนคนได้ (JS variable อย่างเดียว)
+// - รอพี่เอรัน SQL schema เพิ่ม column
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -465,7 +465,7 @@ async function createRoom() {
     myPlayerId = 'p_' + Math.random().toString(36).substr(2, 9);
     var players = {};
     players[myPlayerId] = { id: myPlayerId, name: name, isBot: false, isHost: true };
-    var _data = await db.from('rooms').upsert({ id: roomCode, code: roomCode, players: players, status: 'lobby', totalPlayers: totalPlayers });
+    var _data = await db.from('rooms').upsert({ id: roomCode, code: roomCode, players: players, status: 'lobby' });
     if (_data.error) { notify('❌ สร้างห้องไม่สำเร็จ'); return; }
     showScreen('lobby-screen');
     document.getElementById('display-room-code').textContent = roomCode;
@@ -1455,7 +1455,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v27 Loaded!');
+  console.log('[DummyRummy] v28 Loaded!');
   // Cleanup: delete rooms still in lobby (never started) — skip 'playing' rooms
   if (db) {
     (async function() {
