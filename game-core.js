@@ -1,6 +1,6 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v11
-// Fix: bot freeze (remove double botPlay), add ฝาก layoff system
+// 🃏 DUMMY RUMMY — game-core.js v13
+// Fix: bot timeout safety wrapper (8s), advanceTurn fallback
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -312,7 +312,7 @@ async function setupRealtime(rid) {
             if (!botRunning[pid]) {
               botRunning[pid] = true;
               setTimeout(function() {
-                botPlay(pid);
+                botWithTimeout(pid);
               }, 800);
             }
           }
@@ -446,7 +446,7 @@ async function startGame() {
         var pid = currentGame.turnPlayerId;
         if (!botRunning[pid]) {
           botRunning[pid] = true;
-          setTimeout(function(){ botPlay(pid); }, 800);
+          setTimeout(function(){ botWithTimeout(pid); }, 800);
         }
       }
     }, 1200);
@@ -656,15 +656,53 @@ async function handleKnockout(koId) {
   } catch(e) { console.error('handleKnockout error:', e); }
 }
 
-// --- BOT ---
+// --- BOT with timeout safety ---
+function botWithTimeout(botId) {
+  var done = false;
+  setTimeout(function() {
+    if (!done) {
+      console.warn('[Bot] TIMEOUT for', botId, '- forcing advance');
+      botRunning[botId] = false;
+      (function() {
+        var order = currentGame.playerOrder;
+        var idx = order.indexOf(botId);
+        if (idx < 0) return;
+        var nextIdx = (idx + 1) % order.length;
+        var nextPid = order[nextIdx];
+        currentGame.turnPlayerId = nextPid;
+        currentGame.phase = 'draw';
+        currentGame.turnStartTime = Date.now();
+        db.from('rooms').update({ game: currentGame }).eq('id', roomCode).then(function() {
+          renderGame(currentGame);
+          var _d = null;
+          db.from('rooms').select('players').eq('id', roomCode).single().then(function(_d) {
+            var players = (_d && _d.data && _d.data.players) || {};
+            var np = players[nextPid];
+            if (np && np.isBot && currentGame.status === 'playing') {
+              setTimeout(function() { botWithTimeout(nextPid); }, 600);
+            }
+          }).catch(function(){});
+        }).catch(function(){});
+      })();
+    }
+  }, 8000);
+  botPlay(botId).then(function() {
+    done = true;
+  }).catch(function(e) {
+    done = true;
+    console.error('[Bot] error:', botId, e);
+    botRunning[botId] = false;
+  });
+}
+
 async function botPlay(botId) {
   try {
-    console.log('[Bot] botPlay START', botId);
     if (!currentGame || currentGame.status !== 'playing') { botRunning[botId] = false; return; }
     if (currentGame.turnPlayerId !== botId) { botRunning[botId] = false; return; }
 
-    await delay(700);
-    // Re-read current game state before acting
+    await delay(600);
+
+    // Re-read current game state
     var _data = await db.from('rooms').select('game').eq('id', roomCode).single();
     if (_data.data && _data.data.game) currentGame = _data.data.game;
     if (!currentGame || currentGame.turnPlayerId !== botId) { botRunning[botId] = false; return; }
@@ -673,7 +711,7 @@ async function botPlay(botId) {
     var hand = codesToCards(handCodes);
     var pickedThisTurn = false;
 
-    // --- DRAW PHASE: try pick from discard ---
+    // --- DRAW: try pick from discard first ---
     if (currentGame.discardPile && currentGame.discardPile.length > 0) {
       var discard = currentGame.discardPile;
       for (var di = discard.length - 1; di >= 0; di--) {
@@ -684,54 +722,43 @@ async function botPlay(botId) {
           var newHandCodes = handCodes.concat(taken);
           var newPicked = Object.assign({}, currentGame.pickedFromDiscard || {});
           newPicked[botId] = taken;
-
-          // ทิ้งมี่ penalty
           var discardOwner = currentGame.lastDiscard ? currentGame.lastDiscard.playerId : null;
           if (discardOwner && discardOwner !== botId) {
             var sc = Object.assign({}, currentGame.scores || {});
             sc[discardOwner] = (sc[discardOwner] || 0) - 100;
-            currentGame = Object.assign(currentGame, { scores: sc });
+            currentGame.scores = sc;
           }
-
-          currentGame = Object.assign(currentGame, {
-            hands: Object.assign({}, currentGame.hands, { [botId]: newHandCodes }),
-            discardPile: remaining,
-            phase: 'action',
-            turnStartTime: Date.now(),
-            pickedFromDiscard: newPicked,
-            lastDiscard: null
-          });
-          await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+          currentGame.hands[botId] = newHandCodes;
+          currentGame.discardPile = remaining;
+          currentGame.phase = 'action';
+          currentGame.turnStartTime = Date.now();
+          currentGame.pickedFromDiscard = newPicked;
+          currentGame.lastDiscard = null;
+          await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
           hand = codesToCards(newHandCodes);
           handCodes = newHandCodes;
           pickedThisTurn = true;
 
-          // Bot must meld picked cards immediately
-          var hasFirstMeld = currentGame.hasFirstMeld && currentGame.hasFirstMeld[botId];
-          if (!hasFirstMeld) {
-            var botMelds = findMelds(hand);
-            var validBotMelds = botMelds.filter(function(m) {
-              return m.cards.some(function(c){ return taken.indexOf(c.code) >= 0; });
-            });
-            if (validBotMelds.length > 0) {
-              var bm = validBotMelds[0];
-              var bmCodes = bm.cards.map(function(c){ return c.code; });
-              var newBotHand = hand.filter(function(c){ return bmCodes.indexOf(c.code) === -1; });
-              var botMeldList = Object.assign({}, currentGame.melds || {});
-              botMeldList[botId] = (botMeldList[botId] || []).concat([bmCodes]);
-              var newBotHasMeld = Object.assign({}, currentGame.hasFirstMeld || {});
-              newBotHasMeld[botId] = true;
-              var newP2 = Object.assign({}, currentGame.pickedFromDiscard || {});
-              delete newP2[botId];
-              currentGame = Object.assign(currentGame, {
-                hands: Object.assign({}, currentGame.hands, { [botId]: newBotHand.map(function(c){ return c.code; }) }),
-                melds: botMeldList,
-                hasFirstMeld: newBotHasMeld,
-                pickedFromDiscard: newP2
-              });
-              await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-              hand = newBotHand;
-              handCodes = newBotHand.map(function(c){ return c.code; });
+          // Meld picked cards immediately
+          var hasFM = currentGame.hasFirstMeld && currentGame.hasFirstMeld[botId];
+          if (!hasFM) {
+            var botM = findMelds(hand);
+            var validM = botM.filter(function(m){ return m.cards.some(function(c){ return taken.indexOf(c.code) >= 0; }); });
+            if (validM.length > 0) {
+              var bmg = validM[0];
+              var bmgCodes = bmg.cards.map(function(c){ return c.code; });
+              var nbh = hand.filter(function(c){ return bmgCodes.indexOf(c.code) === -1; });
+              if (!currentGame.melds) currentGame.melds = {};
+              if (!currentGame.melds[botId]) currentGame.melds[botId] = [];
+              currentGame.melds[botId].push(bmgCodes);
+              if (!currentGame.hasFirstMeld) currentGame.hasFirstMeld = {};
+              currentGame.hasFirstMeld[botId] = true;
+              var np2 = Object.assign({}, currentGame.pickedFromDiscard || {});
+              delete np2[botId];
+              currentGame.pickedFromDiscard = np2;
+              currentGame.hands[botId] = nbh.map(function(c){ return c.code; });
+              await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
+              hand = nbh; handCodes = nbh.map(function(c){ return c.code; });
             }
           }
           break;
@@ -739,113 +766,96 @@ async function botPlay(botId) {
       }
     }
 
-    // --- DRAW: if didn't pick, draw from deck ---
+    // --- DRAW: draw from deck if didn't pick ---
     if (!pickedThisTurn && currentGame.deck.length > 0) {
-      var deck2 = currentGame.deck.slice();
-      var drawn = deck2.pop();
-      hand = sortHand(hand.concat([codeToCard(drawn)]));
+      var dk = currentGame.deck.slice();
+      var dr = dk.pop();
+      hand = sortHand(hand.concat([codeToCard(dr)]));
       handCodes = hand.map(function(c){ return c.code; });
-      currentGame = Object.assign(currentGame, {
-        deck: deck2,
-        hands: Object.assign({}, currentGame.hands, { [botId]: handCodes }),
-        phase: 'action',
-        turnStartTime: Date.now()
-      });
-      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-      await delay(400);
-    } else if (!pickedThisTurn && currentGame.deck.length === 0) {
-      currentGame = Object.assign(currentGame, { phase: 'action', deckEmpty: true });
-      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+      currentGame.deck = dk;
+      currentGame.hands[botId] = handCodes;
+      currentGame.phase = 'action';
+      currentGame.turnStartTime = Date.now();
+      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
+      await delay(300);
+    } else if (!pickedThisTurn) {
+      currentGame.phase = 'action';
+      currentGame.deckEmpty = true;
+      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
     }
 
-    // --- ACTION PHASE: meld (first meld) ---
-    var hasFirstMeld2 = currentGame.hasFirstMeld && currentGame.hasFirstMeld[botId];
-    if (!hasFirstMeld2) {
-      var validM = findMelds(hand);
-      if (validM.length > 0) {
-        var m0 = validM[0];
-        var m0Codes = m0.cards.map(function(c){ return c.code; });
-        var newH = hand.filter(function(c){ return m0Codes.indexOf(c.code) === -1; });
-        currentGame = Object.assign(currentGame, {
-          melds: Object.assign({}, currentGame.melds || {}, { [botId]: (currentGame.melds[botId]||[]).concat([m0Codes]) }),
-          hasFirstMeld: Object.assign({}, currentGame.hasFirstMeld || {}, { [botId]: true }),
-          hands: Object.assign({}, currentGame.hands, { [botId]: newH.map(function(c){ return c.code; }) })
-        });
-        await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-        hand = newH;
-        handCodes = newH.map(function(c){ return c.code; });
-        await delay(400);
+    // --- ACTION: meld (first meld if not yet) ---
+    var hasFM2 = currentGame.hasFirstMeld && currentGame.hasFirstMeld[botId];
+    if (!hasFM2) {
+      var vm = findMelds(hand);
+      if (vm.length > 0) {
+        var m0 = vm[0];
+        var m0c = m0.cards.map(function(c){ return c.code; });
+        var nh = hand.filter(function(c){ return m0c.indexOf(c.code) === -1; });
+        if (!currentGame.melds) currentGame.melds = {};
+        if (!currentGame.melds[botId]) currentGame.melds[botId] = [];
+        currentGame.melds[botId].push(m0c);
+        if (!currentGame.hasFirstMeld) currentGame.hasFirstMeld = {};
+        currentGame.hasFirstMeld[botId] = true;
+        currentGame.hands[botId] = nh.map(function(c){ return c.code; });
+        await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
+        hand = nh; handCodes = nh.map(function(c){ return c.code; });
+        await delay(300);
       }
     } else {
-      // --- LAYOFF (ฝาก) ---
-      var layoffs = findAllLayoffs(handCodes, currentGame);
-      if (layoffs.length > 0) {
-        // Lay off the first valid option
-        var lo = layoffs[0];
-        var loCard = codeToCard(lo.layoffCard);
-        var newLH = hand.filter(function(c){ return c.code !== lo.layoffCard; });
-        var targetMeld = currentGame.melds[lo.targetPid] || [];
-        var meldIdx = -1;
-        for (var mi = 0; mi < targetMeld.length; mi++) {
-          if (JSON.stringify(targetMeld[mi]) === JSON.stringify(lo.targetMeld)) { meldIdx = mi; break; }
+      // Layoff
+      var los = findAllLayoffs(handCodes, currentGame);
+      if (los.length > 0) {
+        var lo = los[0];
+        var nloh = hand.filter(function(c){ return c.code !== lo.layoffCard; });
+        if (!currentGame.melds) currentGame.melds = {};
+        var tMeld = currentGame.melds[lo.targetPid] || [];
+        var mi2 = -1;
+        for (var mii = 0; mii < tMeld.length; mii++) {
+          if (JSON.stringify(tMeld[mii]) === JSON.stringify(lo.targetMeld)) { mi2 = mii; break; }
         }
-        var newTargetMeld = targetMeld.slice();
-        if (meldIdx >= 0) newTargetMeld[meldIdx] = targetMeld[meldIdx].concat([lo.layoffCard]);
-        var newMelds = Object.assign({}, currentGame.melds || {});
-        newMelds[lo.targetPid] = newTargetMeld;
-        currentGame = Object.assign(currentGame, {
-          melds: newMelds,
-          hands: Object.assign({}, currentGame.hands, { [botId]: newLH.map(function(c){ return c.code; }) })
-        });
-        await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-        hand = newLH;
-        handCodes = newLH.map(function(c){ return c.code; });
-        await delay(400);
+        if (mi2 >= 0) tMeld[mi2] = tMeld[mi2].concat([lo.layoffCard]);
+        currentGame.melds[lo.targetPid] = tMeld;
+        currentGame.hands[botId] = nloh.map(function(c){ return c.code; });
+        await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
+        hand = nloh; handCodes = nloh.map(function(c){ return c.code; });
+        await delay(300);
       }
     }
 
     // --- DISCARD ---
     if (hand.length > 0) {
-      var pickedCodes = (currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[botId]) || [];
-      var canD = hand.filter(function(c){ return pickedCodes.indexOf(c.code) === -1; });
+      var pCodes = (currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[botId]) || [];
+      var canD = hand.filter(function(c){ return pCodes.indexOf(c.code) === -1; });
       if (canD.length === 0) canD = hand;
-      var spetoD = canD.filter(function(c){ return isSpeto(c); });
-      var discardCard = spetoD.length > 0 ? spetoD[0] : canD[canD.length - 1];
-      var newH3 = hand.filter(function(c){ return c.code !== discardCard.code; });
-      var newP3 = Object.assign({}, currentGame.pickedFromDiscard || {});
-      delete newP3[botId];
-      var newLastD = { playerId: botId, cardCode: discardCard.code };
-
-      if (newH3.length === 0) {
-        await db.from('rooms').update({
-          game: Object.assign({}, currentGame, {
-            hands: Object.assign({}, currentGame.hands, { [botId]: [] }),
-            discardPile: currentGame.discardPile.concat([discardCard.code]),
-            pickedFromDiscard: newP3,
-            lastDiscard: newLastD
-          })
-        }).eq('id', roomCode);
+      var sD = canD.filter(function(c){ return isSpeto(c); });
+      var dCard = sD.length > 0 ? sD[0] : canD[canD.length - 1];
+      var nh3 = hand.filter(function(c){ return c.code !== dCard.code; });
+      var np3 = Object.assign({}, currentGame.pickedFromDiscard || {});
+      delete np3[botId];
+      var nLD = { playerId: botId, cardCode: dCard.code };
+      if (nh3.length === 0) {
+        currentGame.hands[botId] = [];
+        currentGame.discardPile = (currentGame.discardPile||[]).concat([dCard.code]);
+        currentGame.pickedFromDiscard = np3;
+        currentGame.lastDiscard = nLD;
+        await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
         botRunning[botId] = false;
         await handleKnockout(botId);
         return;
       }
-
-      currentGame = Object.assign(currentGame, {
-        hands: Object.assign({}, currentGame.hands, { [botId]: newH3.map(function(c){ return c.code; }) }),
-        discardPile: currentGame.discardPile.concat([discardCard.code]),
-        phase: 'draw',
-        turnStartTime: Date.now(),
-        pickedFromDiscard: newP3,
-        lastDiscard: newLastD
-      });
-      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-      await delay(300);
+      currentGame.hands[botId] = nh3.map(function(c){ return c.code; });
+      currentGame.discardPile = (currentGame.discardPile||[]).concat([dCard.code]);
+      currentGame.phase = 'draw';
+      currentGame.turnStartTime = Date.now();
+      currentGame.pickedFromDiscard = np3;
+      currentGame.lastDiscard = nLD;
+      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
     }
 
     botRunning[botId] = false;
     await advanceTurn();
   } catch(e) {
-    console.error('botPlay error:', e);
     botRunning[botId] = false;
   }
 }
@@ -1375,7 +1385,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v11 Loaded!');
+  console.log('[DummyRummy] v13 Loaded!');
   if (db) {
     (async function() {
       try {
