@@ -262,6 +262,7 @@ var myName = '';
 var roomCode = null;
 var realtimeChannel = null;
 var currentGame = null;
+var currentRoomVersion = 0; // rooms.version — แยกจาก currentGame เพราะ version อยู่ที่ row level ไม่ใช่ใน game JSONB
 // Helper: deep-copy currentGame and apply patch, so JSON.stringify comparison always detects changes
 function setGame(patch) { var ng = JSON.parse(JSON.stringify(currentGame)); Object.assign(ng, patch); currentGame = ng; }
 
@@ -270,7 +271,7 @@ function setGame(patch) { var ng = JSON.parse(JSON.stringify(currentGame)); Obje
 // Pass explicit `playerId` when called from botPlay; otherwise uses myPlayerId
 async function rpcPlayTurn(action, opts) {
   opts = opts || {};
-  var version = currentGame ? (currentGame.version || 1) : 1;
+  var version = currentRoomVersion || 1;
   var playerId = opts.playerId || myPlayerId;
   var payload = {
     p_game_id:          roomCode,
@@ -294,6 +295,7 @@ async function rpcPlayTurn(action, opts) {
         var fresh = await db.from('rooms').select('id,code,players,game,status,version,totalplayers').eq('id', roomCode).single();
         if (fresh.data && fresh.data.game) {
           currentGame = fresh.data.game;
+          currentRoomVersion = fresh.data.version || currentRoomVersion;
           renderGame(currentGame);
         }
       }
@@ -310,7 +312,8 @@ async function rpcPlayTurn(action, opts) {
     // Update currentGame from server response
     if (data.game) {
       currentGame = data.game;
-      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
+      currentRoomVersion = (data.game.version || currentRoomVersion + 1);
+      await db.from('rooms').update({ game: currentGame, version: currentRoomVersion }).eq('id', roomCode).catch(function(){});
     }
     return data;
   } catch(e) {
@@ -427,6 +430,7 @@ async function setupRealtime(rid) {
         }
         else if (room.status === 'playing' && room.game) {
           currentGame = room.game;
+          currentRoomVersion = room.version || currentRoomVersion;
           showScreen('game-screen');
           renderGame(room.game);
           // Trigger bot from realtime callback ONLY
@@ -809,9 +813,10 @@ async function botPlay(botId) {
     await delay(600);
 
     // Re-read current game state from DB (now includes version)
-    var _data = await db.from('rooms').select('game').eq('id', roomCode).single();
+    var _data = await db.from('rooms').select('id,code,game,version').eq('id', roomCode).single();
     if (_data.data && _data.data.game) {
       currentGame = _data.data.game;
+      currentRoomVersion = _data.data.version || currentRoomVersion;
       console.log('[Bot] re-read turn:', currentGame.turnPlayerId, 'phase:', currentGame.phase, 'version:', currentGame.version);
     }
     if (!currentGame || currentGame.turnPlayerId !== botId) { console.log('[Bot] RETURN: after re-read not my turn'); botRunning[botId] = false; return; }
@@ -1445,6 +1450,7 @@ function startPolling(rid) {
           if (changed) {
             console.log('[Poll] game changed, turn:', remoteRoom.game.turnPlayerId);
             currentGame = remoteRoom.game;
+            currentRoomVersion = remoteRoom.version || currentRoomVersion;
             if (remoteRoom.status === 'playing') {
               renderGame(currentGame);
               // Also trigger bot from polling as backup
