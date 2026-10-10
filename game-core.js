@@ -1,6 +1,6 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v13
-// Fix: bot timeout safety wrapper (8s), advanceTurn fallback
+// 🃏 DUMMY RUMMY — game-core.js v14
+// Add: turn timer (12s draw / 18s action → auto), modal pause
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -267,6 +267,12 @@ var pendingPickedCodes = [];   // codes picked from discard this turn (must meld
 var layoffTargets = [];        // valid layoff options found for current hand
 var pollInterval = null;
 var botRunning = {};           // prevent double-bot: pid -> true while bot is playing
+var turnTimerInterval = null;
+var DRAW_TIMEOUT = 12000;       // 12s without action → auto draw
+var ACTION_TIMEOUT = 18000;     // 18s without action → auto discard
+var turnPhase = null;           // track current phase for timer
+var modalOpen = false;          // pause timer while modal is open
+var turnPhase = null;           // track current phase for timer
 
 // --- UTILS ---
 function genRoomCode() {
@@ -290,6 +296,70 @@ function showScreen(id) {
   } catch(e) { console.error('showScreen error:', e); }
 }
 function delay(ms) { return new Promise(function(r){ setTimeout(r, ms); }); }
+
+// --- TURN TIMER: auto-draw / auto-discard ---
+function startTurnTimer(phase) {
+  stopTurnTimer();
+  turnPhase = phase;
+  var timeout = phase === 'draw' ? DRAW_TIMEOUT : ACTION_TIMEOUT;
+  var remaining = timeout;
+  turnTimerInterval = setInterval(function() {
+    remaining -= 1000;
+    var secs = Math.ceil(remaining / 1000);
+    var ti = document.getElementById('turn-indicator');
+    if (ti && myTurn) {
+      if (secs > 0) ti.textContent = '🎯 ตาของคุณ! ⏱ ' + secs + 's';
+    }
+    if (remaining <= 0) {
+      stopTurnTimer();
+      if (myTurn && currentGame && !modalOpen) {
+        if (turnPhase === 'draw') {
+          doDrawCard();
+        } else {
+          autoDiscard();
+        }
+      }
+    }
+  }, 1000);
+}
+
+function stopTurnTimer() {
+  if (turnTimerInterval) { clearInterval(turnTimerInterval); turnTimerInterval = null; }
+}
+
+function autoDiscard() {
+  // Find safest card to discard (not in any potential meld, prefer high pts)
+  var handCodes = currentGame.hands[myPlayerId] || [];
+  var hand = codesToCards(handCodes);
+  var picked = (currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[myPlayerId]) || [];
+  // Cards that CAN be part of a meld → de-prioritize
+  var allMelds = findAllSetsAndRuns(hand);
+  var usedCodes = {};
+  allMelds.forEach(function(m) { m.cards.forEach(function(c) { usedCodes[c.code] = true; }); });
+  // Never discard picked cards
+  var canDiscard = hand.filter(function(c) { return picked.indexOf(c.code) === -1; });
+  if (canDiscard.length === 0) canDiscard = hand;
+  // Prefer discarding: non-meld cards, then high-point cards
+  var safe = canDiscard.filter(function(c) { return !usedCodes[c.code]; });
+  var targets = safe.length > 0 ? safe : canDiscard;
+  // Pick highest point card (but not speto)
+  var nonSpeto = targets.filter(function(c) { return !isSpeto(c); });
+  var discardList = nonSpeto.length > 0 ? nonSpeto : targets;
+  discardList.sort(function(a, b) { return cardPts(b) - cardPts(a); });
+  var toDiscard = discardList[0];
+  if (!toDiscard) toDiscard = canDiscard[0];
+  if (toDiscard) {
+    pendingDiscardCode = toDiscard.code;
+    doDiscard();
+  }
+}
+
+function cardPts(c) {
+  var v = c.rank;
+  if (v === 'A') return 1;
+  if (['J','Q','K'].indexOf(v) >= 0) return 10;
+  return parseInt(v) || 0;
+}
 
 // --- SUPABASE ---
 async function setupRealtime(rid) {
@@ -475,6 +545,7 @@ async function drawCard() {
     renderYourHand();
     updateLayoffTargets();
     updateActionBtns();
+    startTurnTimer('action');
     notify('📦 จั่วได้: ' + (drawnCard ? drawnCard.rank + drawnCard.suit : drawnCode));
   } catch(e) { console.error('drawCard error:', e); }
 }
@@ -864,6 +935,7 @@ async function botPlay(botId) {
 function openMeldModal(pickedCodes) {
   selectedMeldIndex = null;
   window._selectedMeld = null;
+  modalOpen = true;
   try {
     document.getElementById('meld-modal').classList.add('active');
     renderMeldOptions(pickedCodes || []);
@@ -872,6 +944,7 @@ function openMeldModal(pickedCodes) {
 }
 
 function closeMeldModal() {
+  modalOpen = false;
   try { document.getElementById('meld-modal').classList.remove('active'); } catch(e) {}
 }
 
@@ -960,6 +1033,7 @@ async function confirmMeld() {
     renderScoreboard(currentGame);
     updateLayoffTargets();
     updateActionBtns();
+    startTurnTimer('action');
   } catch(e) { console.error('confirmMeld error:', e); }
 }
 
@@ -984,6 +1058,7 @@ function updateLayoffBtn() {
 
 function openLayoffModal() {
   if (layoffTargets.length === 0) { notify('ไม่มีไพ่ที่ฝากได้'); return; }
+  modalOpen = true;
   try {
     document.getElementById('layoff-modal').classList.add('active');
     renderLayoffOptions();
@@ -991,6 +1066,7 @@ function openLayoffModal() {
 }
 
 function closeLayoffModal() {
+  modalOpen = false;
   try { document.getElementById('layoff-modal').classList.remove('active'); } catch(e) {}
 }
 
@@ -1061,6 +1137,7 @@ async function selectLayoff(lt) {
     renderPlayerMeldRow();
     updateLayoffTargets();
     updateActionBtns();
+    startTurnTimer('action');
   } catch(e) { console.error('selectLayoff error:', e); }
 }
 
@@ -1094,6 +1171,12 @@ async function renderGame(game) {
     myTurn = turnPlayerId === myPlayerId;
     var ti = document.getElementById('turn-indicator');
     if (ti) ti.textContent = myTurn ? '🎯 ตาของคุณ!' : '⏳ รอตาคนอื่น...';
+    // Start/stop turn timer for player
+    if (myTurn && game.status === 'playing') {
+      startTurnTimer(game.phase);
+    } else {
+      stopTurnTimer();
+    }
     var ri = document.getElementById('round-info');
     if (ri) ri.textContent = 'รอบ: ' + (game.round || 1) + ' | ทิ้ง: ' + (game.discardPile ? game.discardPile.length : 0);
     var dc = document.getElementById('deck-count');
@@ -1385,7 +1468,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v13 Loaded!');
+  console.log('[DummyRummy] v14 Loaded!');
   if (db) {
     (async function() {
       try {
