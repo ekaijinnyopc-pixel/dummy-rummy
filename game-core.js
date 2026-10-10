@@ -323,6 +323,7 @@ var myTurn = false;
 var pendingPickedCodes = [];   // codes picked from discard this turn (must meld)
 var layoffTargets = [];        // valid layoff options found for current hand
 var pollInterval = null;
+var currentLobbyPlayers = null; // last-seen lobby players from polling (for diff render)
 var botRunning = {};           // prevent double-bot: pid -> true while bot is playing
 var turnTimerInterval = null;
 var PLAYER_TIMEOUT = 120000;    // 120s per turn (any action resets)
@@ -487,17 +488,28 @@ async function joinRoom() {
     if (_data.error || !_data.data) { notify('❌ ไม่พบห้องนี้'); return; }
     var room = _data.data;
     if (room.status === 'playing') { notify('❌ เกมเริ่มแล้ว'); return; }
-    var players = Object.assign({}, room.players || {});
-    var keys = Object.keys(players);
-    if (keys.length >= (room.totalplayers || 4)) { notify('❌ ห้องเต็มแล้ว'); return; }
-    players[myPlayerId] = { id: myPlayerId, name: name, isBot: false, isHost: false };
-    await db.from('rooms').update({ players: players }).eq('id', code);
+    var _fresh = await db.from('rooms').select('id,players,version,totalplayers').eq('id', code).single();
+    if (!_fresh.data) { notify('❌ ไม่พบห้อง'); return; }
+    var currentPlayers = _fresh.data.players || {};
+    if (currentPlayers[myPlayerId]) { notify('คุณอยู่ในห้องแล้ว'); return; }
+    var currentKeys = Object.keys(currentPlayers);
+    if (currentKeys.length >= (_fresh.data.totalplayers || 4)) { notify('❌ ห้องเต็มแล้ว'); return; }
+    var newPlayers = Object.assign({}, currentPlayers);
+    newPlayers[myPlayerId] = { id: myPlayerId, name: name, isBot: false, isHost: false };
+    var updated = await db.from('rooms').update({
+      players: newPlayers,
+      version: _fresh.data.version + 1
+    }).eq('id', code).eq('version', _fresh.data.version);
+    if (!updated.data || (updated.data && updated.data.length === 0)) {
+      notify('❌ ห้องเต็มหรือมีคนเข้าแล้ว — ลองใหม่');
+      return;
+    }
     roomCode = code;
-    totalPlayers = room.totalplayers || 4;
+    totalPlayers = _fresh.data.totalplayers || 4;
     showScreen('lobby-screen');
     document.getElementById('display-room-code').textContent = code;
     await setupRealtime(code);
-    renderLobby(players, totalPlayers);
+    renderLobby(newPlayers, totalPlayers);
     notify('✅ เข้าห้องสำเร็จ!');
   } catch(e) { console.error('joinRoom error:', e); notify('❌ ผิดพลาด: ' + e.message); }
 }
@@ -515,7 +527,7 @@ async function leaveRoom() {
     }
     if (realtimeChannel) { realtimeChannel.unsubscribe(); realtimeChannel = null; }
     stopPolling();
-    roomCode = null; myPlayerId = null; currentGame = null; selectedCards = []; pendingPickedCodes = []; layoffTargets = [];
+    roomCode = null; myPlayerId = null; currentGame = null; currentLobbyPlayers = null; selectedCards = []; pendingPickedCodes = []; layoffTargets = [];
     showScreen('home-screen');
   } catch(e) { console.error('leaveRoom error:', e); }
 }
@@ -1417,6 +1429,17 @@ function startPolling(rid) {
       }
       if (_data.data) {
         var remoteRoom = _data.data;
+        if (remoteRoom.status === 'lobby') {
+          var newTotal = remoteRoom.totalplayers || 4;
+          var playersStr = JSON.stringify(remoteRoom.players || {});
+          var curPlayersStr = JSON.stringify(currentLobbyPlayers || {});
+          var totalChanged = newTotal !== totalPlayers;
+          if (playersStr !== curPlayersStr || totalChanged) {
+            currentLobbyPlayers = remoteRoom.players || {};
+            totalPlayers = newTotal;
+            renderLobby(currentLobbyPlayers, totalPlayers);
+          }
+        }
         if (remoteRoom.game) {
           var changed = JSON.stringify(remoteRoom.game) !== JSON.stringify(currentGame);
           if (changed) {
@@ -1455,14 +1478,17 @@ document.addEventListener('DOMContentLoaded', function() {
     if (codeEl) codeEl.value = params.get('room');
   }
   console.log('[DummyRummy] v30 Loaded!');
-  // Cleanup: delete rooms still in lobby (never started) — skip 'playing' rooms
+  // Cleanup: delete ONLY empty lobby rooms older than 1 hour — safe for active rooms
   if (db) {
     (async function() {
       try {
-        var lobbies = await db.from('rooms').select('id, status').eq('status', 'lobby').limit(20);
-        if (lobbies.data && lobbies.data.length > 0) {
-          for (var ri = 0; ri < lobbies.data.length; ri++) {
-            await db.from('rooms').delete().eq('id', lobbies.data[ri].id).eq('status', 'lobby');
+        // Only delete rooms that are empty (no players) AND older than 1 hour
+        var cutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+        var oldEmpty = await db.from('rooms').select('id').eq('status', 'lobby').eq('players', '{}').lt('created_at', cutoff).limit(20);
+        if (oldEmpty.data && oldEmpty.data.length > 0) {
+          for (var ri = 0; ri < oldEmpty.data.length; ri++) {
+            await db.from('rooms').delete().eq('id', oldEmpty.data[ri].id);
+            console.log('[Cleanup] deleted old empty room:', oldEmpty.data[ri].id);
           }
         }
       } catch(e) { console.warn('[Cleanup] skipped:', e.message); }
