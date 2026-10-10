@@ -1,6 +1,6 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v14
-// Add: turn timer (12s draw / 18s action → auto), modal pause
+// 🃏 DUMMY RUMMY — game-core.js v15
+// Simplify: unified 120s player timer (all phases), any action resets
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -268,9 +268,8 @@ var layoffTargets = [];        // valid layoff options found for current hand
 var pollInterval = null;
 var botRunning = {};           // prevent double-bot: pid -> true while bot is playing
 var turnTimerInterval = null;
-var DRAW_TIMEOUT = 12000;       // 12s without action → auto draw
-var ACTION_TIMEOUT = 18000;     // 18s without action → auto discard
-var turnPhase = null;           // track current phase for timer
+var PLAYER_TIMEOUT = 120000;    // 120s per turn (any action resets)
+var playerTimeLeft = 120;       // seconds remaining
 var modalOpen = false;          // pause timer while modal is open
 var turnPhase = null;           // track current phase for timer
 
@@ -297,57 +296,49 @@ function showScreen(id) {
 }
 function delay(ms) { return new Promise(function(r){ setTimeout(r, ms); }); }
 
-// --- TURN TIMER: auto-draw / auto-discard ---
-function startTurnTimer(phase) {
-  stopTurnTimer();
-  turnPhase = phase;
-  var timeout = phase === 'draw' ? DRAW_TIMEOUT : ACTION_TIMEOUT;
-  var remaining = timeout;
+// --- PLAYER TURN TIMER: 120s total, resets on any action ---
+function startPlayerTimer() {
+  stopPlayerTimer();
+  playerTimeLeft = 120;
   turnTimerInterval = setInterval(function() {
-    remaining -= 1000;
-    var secs = Math.ceil(remaining / 1000);
+    if (modalOpen) return; // pause while modal open
+    playerTimeLeft--;
     var ti = document.getElementById('turn-indicator');
     if (ti && myTurn) {
-      if (secs > 0) ti.textContent = '🎯 ตาของคุณ! ⏱ ' + secs + 's';
+      ti.textContent = '🎯 ตาของคุณ! ⏱ ' + playerTimeLeft + 's';
     }
-    if (remaining <= 0) {
-      stopTurnTimer();
-      if (myTurn && currentGame && !modalOpen) {
-        if (turnPhase === 'draw') {
-          doDrawCard();
-        } else {
-          autoDiscard();
-        }
+    if (playerTimeLeft <= 0) {
+      stopPlayerTimer();
+      if (myTurn && currentGame) {
+        autoDiscard();
       }
     }
   }, 1000);
 }
 
-function stopTurnTimer() {
+function stopPlayerTimer() {
   if (turnTimerInterval) { clearInterval(turnTimerInterval); turnTimerInterval = null; }
 }
 
+function resetPlayerTimer() {
+  if (myTurn) startPlayerTimer();
+}
+
 function autoDiscard() {
-  // Find safest card to discard (not in any potential meld, prefer high pts)
   var handCodes = currentGame.hands[myPlayerId] || [];
   var hand = codesToCards(handCodes);
   var picked = (currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[myPlayerId]) || [];
-  // Cards that CAN be part of a meld → de-prioritize
   var allMelds = findAllSetsAndRuns(hand);
   var usedCodes = {};
   allMelds.forEach(function(m) { m.cards.forEach(function(c) { usedCodes[c.code] = true; }); });
-  // Never discard picked cards
-  var canDiscard = hand.filter(function(c) { return picked.indexOf(c.code) === -1; });
-  if (canDiscard.length === 0) canDiscard = hand;
-  // Prefer discarding: non-meld cards, then high-point cards
-  var safe = canDiscard.filter(function(c) { return !usedCodes[c.code]; });
-  var targets = safe.length > 0 ? safe : canDiscard;
-  // Pick highest point card (but not speto)
+  var canD = hand.filter(function(c) { return picked.indexOf(c.code) === -1; });
+  if (canD.length === 0) canD = hand;
+  var safe = canD.filter(function(c) { return !usedCodes[c.code]; });
+  var targets = safe.length > 0 ? safe : canD;
   var nonSpeto = targets.filter(function(c) { return !isSpeto(c); });
-  var discardList = nonSpeto.length > 0 ? nonSpeto : targets;
-  discardList.sort(function(a, b) { return cardPts(b) - cardPts(a); });
-  var toDiscard = discardList[0];
-  if (!toDiscard) toDiscard = canDiscard[0];
+  var list = nonSpeto.length > 0 ? nonSpeto : targets;
+  list.sort(function(a, b) { return cardPts(b) - cardPts(a); });
+  var toDiscard = list[0] || canD[0];
   if (toDiscard) {
     pendingDiscardCode = toDiscard.code;
     doDiscard();
@@ -545,7 +536,7 @@ async function drawCard() {
     renderYourHand();
     updateLayoffTargets();
     updateActionBtns();
-    startTurnTimer('action');
+    resetPlayerTimer();
     notify('📦 จั่วได้: ' + (drawnCard ? drawnCard.rank + drawnCard.suit : drawnCode));
   } catch(e) { console.error('drawCard error:', e); }
 }
@@ -647,11 +638,11 @@ async function discardSelected() {
 
 async function advanceTurn() {
   try {
+    stopPlayerTimer();
     var order = currentGame.playerOrder;
     var idx = order.indexOf(currentGame.turnPlayerId);
     var nextIdx = (idx + 1) % order.length;
     var nextPid = order[nextIdx];
-    // DON'T call botPlay here — let realtime callback handle it to avoid double-trigger
     currentGame = Object.assign({}, currentGame, { turnPlayerId: nextPid, phase: 'draw', turnStartTime: Date.now() });
     await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
     renderGame(currentGame);
@@ -1033,7 +1024,7 @@ async function confirmMeld() {
     renderScoreboard(currentGame);
     updateLayoffTargets();
     updateActionBtns();
-    startTurnTimer('action');
+    resetPlayerTimer();
   } catch(e) { console.error('confirmMeld error:', e); }
 }
 
@@ -1137,7 +1128,7 @@ async function selectLayoff(lt) {
     renderPlayerMeldRow();
     updateLayoffTargets();
     updateActionBtns();
-    startTurnTimer('action');
+    resetPlayerTimer();
   } catch(e) { console.error('selectLayoff error:', e); }
 }
 
@@ -1171,11 +1162,11 @@ async function renderGame(game) {
     myTurn = turnPlayerId === myPlayerId;
     var ti = document.getElementById('turn-indicator');
     if (ti) ti.textContent = myTurn ? '🎯 ตาของคุณ!' : '⏳ รอตาคนอื่น...';
-    // Start/stop turn timer for player
+    // Start/stop player turn timer
     if (myTurn && game.status === 'playing') {
-      startTurnTimer(game.phase);
+      startPlayerTimer();
     } else {
-      stopTurnTimer();
+      stopPlayerTimer();
     }
     var ri = document.getElementById('round-info');
     if (ri) ri.textContent = 'รอบ: ' + (game.round || 1) + ' | ทิ้ง: ' + (game.discardPile ? game.discardPile.length : 0);
@@ -1468,7 +1459,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v14 Loaded!');
+  console.log('[DummyRummy] v15 Loaded!');
   if (db) {
     (async function() {
       try {
