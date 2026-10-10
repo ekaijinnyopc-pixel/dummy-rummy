@@ -499,8 +499,8 @@ async function joinRoom() {
     var updated = await db.from('rooms').update({
       players: newPlayers,
       version: _fresh.data.version + 1
-    }).eq('id', code).eq('version', _fresh.data.version);
-    if (!updated.data || (updated.data && updated.data.length === 0)) {
+    }).eq('id', code).eq('version', _fresh.data.version).select('id');
+    if (updated.error) {
       notify('❌ ห้องเต็มหรือมีคนเข้าแล้ว — ลองใหม่');
       return;
     }
