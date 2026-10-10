@@ -1,8 +1,8 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v25
-// - Dropdown: select total players (2/3/4), bots auto-filled
-// - Game screen: empty slots show "ไม่มี" instead of "รอผู้เล่น"
-// - Lobby: empty slots show "ไม่มี" instead of "รอผู้เล่น..."
+// 🃏 DUMMY RUMMY — game-core.js v26
+// - Pure human game (no auto-bots)
+// - Select 2/3/4 human players from dropdown
+// - ทดสอบเกมคนก่อน → ค่อยเพิ่มบอททีหลัง
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -457,14 +457,11 @@ async function createRoom() {
     if (!name) { notify('กรุณาใส่ชื่อ'); return; }
     if (!db) { notify('กรุณารอสักครู่... กดอีกครั้ง'); return; }
     var totalPlayers = parseInt(document.getElementById('player-count').value) || 4;
-    var botCount = totalPlayers - 1;  // you + (total-1) bots
     roomCode = genRoomCode();
     myName = name;
     myPlayerId = 'p_' + Math.random().toString(36).substr(2, 9);
     var players = {};
     players[myPlayerId] = { id: myPlayerId, name: name, isBot: false, isHost: true };
-    var botNames = ['🤖 บอทซ้าย', '🤖 บอทกลาง', '🤖 บอทขวา'];
-    for (var i = 0; i < botCount; i++) players['bot_' + i] = { id:'bot_'+i, name:botNames[i], isBot:true, isHost:false };
     var _data = await db.from('rooms').upsert({ id: roomCode, code: roomCode, players: players, status: 'lobby' });
     if (_data.error) { notify('❌ สร้างห้องไม่สำเร็จ'); return; }
     showScreen('lobby-screen');
@@ -1446,7 +1443,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v25 Loaded!');
+  console.log('[DummyRummy] v26 Loaded!');
   // Cleanup: delete rooms still in lobby (never started) — skip 'playing' rooms
   if (db) {
     (async function() {
