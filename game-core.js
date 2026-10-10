@@ -1,7 +1,7 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v20
-// Fix: replace .catch() on Supabase builder with try-catch around await saveGame()
-// Supabase JS v1 builder doesn't have .catch() method - it returns the builder itself
+// 🃏 DUMMY RUMMY — game-core.js v21
+// Fix: setGame() deep-copy helper so JSON.stringify comparison always detects changes
+// Fix: all state updates use setGame() instead of Object.assign
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -262,6 +262,8 @@ var myName = '';
 var roomCode = null;
 var realtimeChannel = null;
 var currentGame = null;
+// Helper: deep-copy currentGame and apply patch, so JSON.stringify comparison always detects changes
+function setGame(patch) { var ng = JSON.parse(JSON.stringify(currentGame)); Object.assign(ng, patch); currentGame = ng; }
 var selectedCards = [];
 var myTurn = false;
 var pendingPickedCodes = [];   // codes picked from discard this turn (must meld)
@@ -526,7 +528,7 @@ async function drawCard() {
     if (!currentGame || !myTurn || currentGame.phase !== 'draw') return;
     var deck = currentGame.deck.slice();
     if (deck.length === 0) {
-      currentGame = Object.assign({}, currentGame, { phase: 'action', deckEmpty: true, turnStartTime: Date.now() });
+      setGame({ phase: 'action', deckEmpty: true, turnStartTime: Date.now() });
       await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
       renderGame(currentGame);
       notify('📦 กองจั่วหมดแล้ว! ทิ้งไพ่ได้เลย');
@@ -537,7 +539,7 @@ async function drawCard() {
     var newHands = Object.assign({}, currentGame.hands);
     newHands[myPlayerId] = (newHands[myPlayerId] || []).concat([drawnCode]);
     pendingPickedCodes = [];
-    currentGame = Object.assign({}, currentGame, { deck: deck, hands: newHands, phase: 'action', turnStartTime: Date.now() });
+    setGame({ deck: deck, hands: newHands, phase: 'action', turnStartTime: Date.now() });
     await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
     renderYourHand();
     updateLayoffTargets();
@@ -577,10 +579,10 @@ async function pickFromDiscard(idx) {
     if (discardOwner && discardOwner !== myPlayerId) {
       var scores = Object.assign({}, currentGame.scores || {});
       scores[discardOwner] = (scores[discardOwner] || 0) - 100;
-      currentGame = Object.assign(currentGame, { scores: scores });
+      setGame({ scores: scores });
     }
 
-    currentGame = Object.assign({}, currentGame, {
+    setGame({
       hands: newHands,
       discardPile: remaining,
       phase: 'action',
@@ -616,7 +618,7 @@ async function discardSelected() {
     if (isSpeto(card)) {
       var scores = Object.assign({}, currentGame.scores || {});
       scores[myPlayerId] = (scores[myPlayerId] || 0) - 100;
-      currentGame = Object.assign(currentGame, { scores: scores });
+      setGame({ scores: scores });
     }
 
     if (newHand.length === 0) {
@@ -630,7 +632,7 @@ async function discardSelected() {
     newHands[myPlayerId] = newHand;
     var newLastDiscard = { playerId: myPlayerId, cardCode: cardCode };
 
-    currentGame = Object.assign({}, currentGame, {
+    setGame({
       hands: newHands,
       discardPile: newDiscard,
       phase: 'draw',
@@ -650,7 +652,7 @@ async function advanceTurn() {
     var nextIdx = (idx + 1) % order.length;
     var nextPid = order[nextIdx];
     console.log('[Turn] advancing from', currentGame.turnPlayerId, 'to', nextPid);
-    currentGame = Object.assign({}, currentGame, { turnPlayerId: nextPid, phase: 'draw', turnStartTime: Date.now() });
+    setGame({ turnPlayerId: nextPid, phase: 'draw', turnStartTime: Date.now() });
     await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
     renderGame(currentGame);
     // Bot will be triggered by realtime callback
@@ -1025,7 +1027,7 @@ async function confirmMeld() {
     delete newPicked[myPlayerId];
     pendingPickedCodes = [];
 
-    currentGame = Object.assign(currentGame, {
+    setGame({
       hands: Object.assign({}, currentGame.hands, { [myPlayerId]: newHandCodes }),
       melds: newMelds,
       hasFirstMeld: newHasFirstMeld,
@@ -1131,7 +1133,7 @@ async function selectLayoff(lt) {
     if (meldIdx >= 0) newTargetMeld[meldIdx] = targetMeld[meldIdx].concat([lt.layoffCard]);
     var newMelds = Object.assign({}, currentGame.melds || {});
     newMelds[lt.targetPid] = newTargetMeld;
-    currentGame = Object.assign(currentGame, {
+    setGame({
       hands: Object.assign({}, currentGame.hands, { [myPlayerId]: newHandCodes }),
       melds: newMelds
     });
@@ -1495,7 +1497,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v20 Loaded!');
+  console.log('[DummyRummy] v21 Loaded!');
   // Cleanup: delete rooms still in lobby (never started) — skip 'playing' rooms
   if (db) {
     (async function() {
