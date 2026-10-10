@@ -3,11 +3,20 @@
 // Supabase Realtime + Game Logic
 // ============================================================
 
-// --- SUPABASE CONFIG ---
+// --- SUPABASE CONFIG (anon key from game-core.js) ---
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_m72xxY53a8lHIHplk8jLRg_es5hrjWf';
-const { createClient } = supabase;
-const db = createClient(SUPABASE_URL, SUPABASE_KEY);
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRidGxiZXltcmNob2Rsb2JveW1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1MTIxNTksImV4cCI6MjEwNzA4ODE1OX0.HHqLCDj3_rEAeGQxs-Yz8eX-xJG0VbMbYWIELC6LYbc';
+
+// Use the global supabase client from supabase.js (loaded before this script).
+// Fallback: if window.supabase is not yet available, build client from UMD bundle.
+let db;
+if (typeof window !== 'undefined' && window.supabase && typeof window.supabase.createClient === 'function') {
+  db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+} else if (typeof supabase !== 'undefined' && typeof supabase.createClient === 'function') {
+  db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+} else {
+  console.error('[Supabase] client not loaded yet — db is undefined');
+}
 
 // --- CONSTANTS ---
 const SUITS = ['♠','♥','♦','♣'];
@@ -163,13 +172,9 @@ function genRoomCode() {
   return code;
 }
 
-function playerRef(roomId) {
-  return db.ref(`rooms/${roomId}/players`);
-}
-
-function gameRef(roomId) {
-  return db.ref(`rooms/${roomId}/game`);
-}
+// (playerRef / gameRef helpers removed — they returned Firebase refs which
+//  are not valid against the Supabase client. All db access now goes through
+//  the explicit db.from('rooms') calls below.)
 
 function notify(msg, duration = 3000) {
   const el = document.getElementById('notification');
@@ -232,25 +237,54 @@ function confetti() {
 }
 
 // ============================================================
+// SUPABASE HELPERS
+// ============================================================
+// `game` lives in a single JSONB column on `rooms`. The original Firebase code
+// did partial updates like `db.ref('rooms/X/game').update({deck, hands, phase})`
+// which merged into the nested object. In Supabase we have to read-merge-write
+// the whole JSONB blob to keep the same semantics.
+async function updateGameState(roomCode, partial) {
+  if (!roomCode) return null;
+  const { data, error } = await db.from('rooms').select('game').eq('id', roomCode).maybeSingle();
+  if (error) { console.warn('[updateGameState] read error:', error.message); return null; }
+  if (!data) return null;
+  const current = data.game || {};
+  const next = { ...current, ...partial };
+  const { error: upErr } = await db.from('rooms').update({ game: next }).eq('id', roomCode);
+  if (upErr) console.warn('[updateGameState] write error:', upErr.message);
+  return next;
+}
+
+// ============================================================
 // SUPABASE REAL-TIME LISTENERS
 // ============================================================
 async function subscribeToRoom(roomId) {
-  if (roomSubscription) roomSubscription.unsubscribe();
-  if (gameSubscription) gameSubscription.unsubscribe();
+  if (roomSubscription) { try { roomSubscription.unsubscribe(); } catch (e) {} }
+  if (gameSubscription) { try { gameSubscription.unsubscribe(); } catch (e) {} }
 
-  // Listen to players
-  roomSubscription = db.ref(`rooms/${roomId}/players`).on('value', snap => {
-    const players = snap.val() || {};
-    renderLobby(players);
-  });
-
-  // Listen to game state
-  gameSubscription = db.ref(`rooms/${roomId}/game`).on('value', snap => {
-    const game = snap.val();
-    if (!game) return;
-    currentGame = game;
-    renderGame(game);
-  });
+  // Single Supabase channel listening to any change on the rooms row for this id.
+  // We branch in the callback to update lobby (players) vs game (game JSONB).
+  roomSubscription = db.channel(`rooms:${roomId}`)
+    .on('postgres_changes',
+      { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` },
+      payload => {
+        const row = payload.new;
+        if (!row) return;
+        if (row.players) renderLobby(row.players);
+        if (row.game) {
+          currentGame = row.game;
+          renderGame(row.game, row.players);
+        }
+        // Cross-client end-of-game notification: if the room flipped to
+        // 'ended' and we haven't already shown the modal, show it now.
+        if (row.status === 'ended' && row.winner &&
+            !document.getElementById('endgame-modal').classList.contains('active')) {
+          showEndGame(row.winner, row.totalScores || {}, row.game?.scores || {}, row.players || {});
+        }
+      })
+    .subscribe();
+  // Keep gameSubscription ref so unsubscribeAll() works symmetrically.
+  gameSubscription = roomSubscription;
 }
 
 function unsubscribeAll() {
@@ -286,7 +320,17 @@ async function createRoom() {
     roomData.players[botId] = { id: botId, name: botNames[i], isBot: true, isHost: false };
   }
   
-  await db.ref(`rooms/${roomCode}`).set(roomData);
+  const { error } = await db.from('rooms').upsert({
+    id: roomCode,
+    code: roomCode,
+    createdAt: roomData.createdAt,
+    status: 'lobby',
+    players: roomData.players,
+    game: null,
+    version: 1,
+    totalplayers: 1 + botCount
+  });
+  if (error) { notify('❌ สร้างห้องไม่สำเร็จ: ' + error.message); return; }
   
   showScreen('lobby-screen');
   document.getElementById('display-room-code').textContent = roomCode;
@@ -303,16 +347,19 @@ async function joinRoom() {
   myName = name;
   myPlayerId = 'p_' + Math.random().toString(36).substr(2,9);
   
-  const snap = await db.ref(`rooms/${code}`).once('value');
-  const room = snap.val();
-  if (!room) { notify('❌ ไม่พบห้องนี้'); return; }
+  const { data: room, error: readErr } = await db.from('rooms').select('*').eq('id', code).maybeSingle();
+  if (readErr || !room) { notify('❌ ไม่พบห้องนี้'); return; }
   if (room.status === 'playing') { notify('❌ เกมเริ่มแล้ว'); return; }
   
-  const playerCount = Object.keys(room.players || {}).length;
-  if (playerCount >= 4) { notify('❌ ห้องเต็มแล้ว'); return; }
+  const existingPlayers = room.players || {};
+  const playerCount = Object.keys(existingPlayers).length;
+  const totalPlayers = room.totalplayers || 4;
+  if (playerCount >= totalPlayers) { notify('❌ ห้องเต็มแล้ว'); return; }
   
   roomCode = code;
-  await db.ref(`rooms/${code}/players/${myPlayerId}`).set({ id: myPlayerId, name, isBot: false, isHost: false });
+  const newPlayers = { ...existingPlayers, [myPlayerId]: { id: myPlayerId, name, isBot: false, isHost: false } };
+  const { error: upErr } = await db.from('rooms').update({ players: newPlayers }).eq('id', code);
+  if (upErr) { notify('❌ เข้าห้องไม่สำเร็จ: ' + upErr.message); return; }
   
   showScreen('lobby-screen');
   document.getElementById('display-room-code').textContent = code;
@@ -322,7 +369,17 @@ async function joinRoom() {
 
 async function leaveRoom() {
   if (!roomCode || !myPlayerId) return;
-  await db.ref(`rooms/${roomCode}/players/${myPlayerId}`).remove();
+  const { data: room } = await db.from('rooms').select('players').eq('id', roomCode).maybeSingle();
+  if (room && room.players) {
+    const next = { ...room.players };
+    delete next[myPlayerId];
+    const remaining = Object.keys(next).length;
+    if (remaining === 0) {
+      await db.from('rooms').delete().eq('id', roomCode);
+    } else {
+      await db.from('rooms').update({ players: next }).eq('id', roomCode);
+    }
+  }
   unsubscribeAll();
   roomCode = null;
   myPlayerId = null;
@@ -331,12 +388,12 @@ async function leaveRoom() {
 
 async function startGame() {
   if (!roomCode) return;
-  const snap = await db.ref(`rooms/${roomCode}/players`).once('value');
-  const players = snap.val() || {};
+  const { data: room } = await db.from('rooms').select('players').eq('id', roomCode).maybeSingle();
+  const players = (room && room.players) || {};
   const playerCount = Object.keys(players).length;
   if (playerCount < 2) { notify('ต้องมีอย่างน้อย 2 คน'); return; }
   
-  await db.ref(`rooms/${roomCode}/status`).set('playing');
+  await db.from('rooms').update({ status: 'playing' }).eq('id', roomCode);
   await initGame(roomCode, players);
 }
 
@@ -376,8 +433,16 @@ async function initGame(roomId, players) {
     gameData.melds[pid] = [];
   }
   
-  await db.ref(`rooms/${roomId}/game`).set(gameData);
-  await db.ref(`rooms/${roomId}/status`).set('playing');
+  // Write the game state. Use upsert so a missing row gets created, then
+  // update status to 'playing' (upsert above may have left it as 'lobby').
+  const { error: upErr } = await db.from('rooms').upsert({
+    id: roomId,
+    code: roomId,
+    game: gameData,
+    status: 'playing',
+    version: (gameData.version || 1)
+  });
+  if (upErr) { console.error('[initGame] upsert failed:', upErr.message); notify('❌ เริ่มเกมไม่สำเร็จ'); return; }
   currentGame = gameData;
   showScreen('game-screen');
 }
@@ -396,7 +461,7 @@ async function drawCard() {
   const newHands = { ...currentGame.hands };
   newHands[myPlayerId] = sortHand([...newHands[myPlayerId], drawn]);
   
-  await db.ref(`rooms/${roomCode}/game`).update({
+  await updateGameState(roomCode, {
     deck,
     hands: newHands,
     phase: 'action',
@@ -420,7 +485,7 @@ async function pickDiscard() {
   newHands[myPlayerId] = sortHand([...newHands[myPlayerId], topDiscard]);
   const newDiscard = discard.slice(0, -1);
   
-  await db.ref(`rooms/${roomCode}/game`).update({
+  await updateGameState(roomCode, {
     hands: newHands,
     discardPile: newDiscard,
     phase: 'action',
@@ -444,7 +509,7 @@ async function discardSelected() {
   
   selectedCards = [];
   
-  await db.ref(`rooms/${roomCode}/game`).update({
+  await updateGameState(roomCode, {
     hands: newHands,
     discardPile: newDiscard,
     phase: 'draw',
@@ -466,22 +531,23 @@ async function advanceTurn() {
   const nextIdx = (idx + 1) % order.length;
   const nextPlayerId = order[nextIdx];
   
-  await db.ref(`rooms/${roomCode}/game`).update({
+  await updateGameState(roomCode, {
     turnPlayerId: nextPlayerId,
     phase: 'draw',
     turnStartTime: Date.now()
   });
   
-  // If next player is bot, trigger bot turn
-  const playerSnap = await db.ref(`rooms/${roomCode}/players/${nextPlayerId}').once('value');
-  const player = playerSnap.val();
+  // If next player is bot, trigger bot turn. Read players from rooms row.
+  const { data: roomRow } = await db.from('rooms').select('players').eq('id', roomCode).maybeSingle();
+  const player = roomRow && roomRow.players ? roomRow.players[nextPlayerId] : null;
   if (player && player.isBot) {
     setTimeout(() => botPlay(nextPlayerId), 1500);
   }
 }
 
 async function handleKnockout(koPlayerId) {
-  const players = (await db.ref(`rooms/${roomCode}/players`).once('value')).val() || {};
+  const { data: roomRow } = await db.from('rooms').select('players').eq('id', roomCode).maybeSingle();
+  const players = (roomRow && roomRow.players) || {};
   
   // Calculate scores for all players
   const scores = {};
@@ -542,13 +608,21 @@ async function handleKnockout(koPlayerId) {
     for (const [pid, total] of Object.entries(totalScores)) {
       if (total < minScore) { minScore = total; winner = pid; }
     }
-    await db.ref(`rooms/${roomCode}/game`).update({
+    await updateGameState(roomCode, {
       status: 'ended',
       winner: winner,
       scores,
       totalScores,
       turnPlayerId: null
     });
+    // Also write the winner/totalScores/status as top-level columns so
+    // other clients' realtime callbacks can pick them up without reading
+    // the nested game JSONB.
+    await db.from('rooms').update({
+      status: 'ended',
+      winner: winner,
+      totalScores: totalScores
+    }).eq('id', roomCode);
     showEndGame(winner, totalScores, scores, players);
   } else {
     // Next round
@@ -663,7 +737,7 @@ async function confirmMeld() {
   const newMelds = { ...currentGame.melds };
   newMelds[myPlayerId] = allMelds;
   
-  await db.ref(`rooms/${roomCode}/game`).update({
+  await updateGameState(roomCode, {
     hands: { ...currentGame.hands, [myPlayerId]: newHand },
     melds: newMelds
   });
@@ -717,7 +791,7 @@ async function botPlay(botId) {
     const allBotMelds = currentGame.melds[botId] || [];
     allBotMelds.push(meld.cards.map(c => c.code));
     const newMelds = { ...currentGame.melds, [botId]: allBotMelds };
-    await db.ref(`rooms/${roomCode}/game`).update({
+    await updateGameState(roomCode, {
       hands: { ...currentGame.hands, [botId]: newHand },
       melds: newMelds
     });
@@ -729,7 +803,7 @@ async function botPlay(botId) {
   if (deck.length > 0) {
     const drawn = deck.pop();
     const newBotHand = sortHand([...currentGame.hands[botId], drawn]);
-    await db.ref(`rooms/${roomCode}/game`).update({
+    await updateGameState(roomCode, {
       deck,
       hands: { ...currentGame.hands, [botId]: newBotHand }
     });
@@ -743,7 +817,7 @@ async function botPlay(botId) {
       const finalHand = newBotHand.filter(c => !meldedCodes.includes(c.code));
       const allBotMelds = currentGame.melds[botId] || [];
       allBotMelds.push(meld.cards.map(c => c.code));
-      await db.ref(`rooms/${roomCode}/game`).update({
+      await updateGameState(roomCode, {
         hands: { ...currentGame.hands, [botId]: finalHand },
         melds: { ...currentGame.melds, [botId]: allBotMelds }
       });
@@ -761,7 +835,7 @@ async function botPlay(botId) {
   
   if (newHandAfterDiscard.length === 0) {
     // Bot knocked out!
-    await db.ref(`rooms/${roomCode}/game`).update({
+    await updateGameState(roomCode, {
       hands: { ...currentGame.hands, [botId]: newHandAfterDiscard },
       discardPile: newDiscard,
       turnPlayerId: botId
@@ -776,7 +850,7 @@ async function botPlay(botId) {
   const nextIdx = (idx + 1) % order.length;
   const nextPlayerId = order[nextIdx];
   
-  await db.ref(`rooms/${roomCode}/game`).update({
+  await updateGameState(roomCode, {
     hands: { ...currentGame.hands, [botId]: newHandAfterDiscard },
     discardPile: newDiscard,
     turnPlayerId: nextPlayerId,
@@ -785,8 +859,8 @@ async function botPlay(botId) {
   });
   
   // Check if next is bot
-  const nextSnap = await db.ref(`rooms/${roomCode}/players/${nextPlayerId}`).once('value');
-  const nextPlayer = nextSnap.val();
+  const { data: roomRow } = await db.from('rooms').select('players').eq('id', roomCode).maybeSingle();
+  const nextPlayer = roomRow && roomRow.players ? roomRow.players[nextPlayerId] : null;
   if (nextPlayer && nextPlayer.isBot) {
     setTimeout(() => botPlay(nextPlayerId), 1500);
   }
@@ -829,21 +903,25 @@ async function renderLobby(players) {
   btnStart.style.display = canStart ? 'block' : 'none';
 }
 
-function renderGame(game) {
+function renderGame(game, playersParam) {
   if (!game) return;
-  
-  const players = Object.values((db.ref(`rooms/${roomCode}/players`).once('value') && {}) || {});
+  // Players may be passed in by the realtime callback (to avoid an extra
+  // round-trip). Otherwise fall back to a fresh read.
+  const players = playersParam || (() => null);
   const order = game.playerOrder || [];
   
-  // Turn indicator
-  const turnPlayer = game.turnPlayerId;
+  // Turn indicator — fix previous turnPlayerId typo (was undefined, used the
+  // local turnPlayer instead).
+  const turnPlayerId = game.turnPlayerId;
   myTurn = turnPlayerId === myPlayerId;
   
-  document.getElementById('turn-indicator').textContent = myTurn ? '🎯 ตาของคุณ!' : `⏳ ${turnPlayerId ? (order[order.indexOf(turnPlayerId)] || '...') : '...'}`;
+  document.getElementById('turn-indicator').textContent = myTurn
+    ? '🎯 ตาของคุณ!'
+    : `⏳ ${turnPlayerId || '...'}`;
   document.getElementById('round-info').textContent = `รอบ: ${game.round || 1} | ทิ้ง: ${game.discardPile?.length || 0}`;
   
   // Opponents
-  renderOpponents(game, order);
+  renderOpponents(game, order, players);
   
   // Deck count
   document.getElementById('deck-count').textContent = `${game.deck?.length || 0} ใบ`;
@@ -855,22 +933,28 @@ function renderGame(game) {
   renderYourHand(game);
   
   // Scoreboard
-  renderScoreboard(game);
+  renderScoreboard(game, players);
   
   // Action bar
   renderActionBar(game);
 }
 
-async function renderOpponents(game, order) {
+async function renderOpponents(game, order, playersParam) {
   const container = document.getElementById('opponents-row');
   container.innerHTML = '';
+  
+  // Use passed-in players map when available, else fetch.
+  let playersMap = typeof playersParam === 'object' && playersParam !== null ? playersParam : null;
+  if (!playersMap) {
+    const { data } = await db.from('rooms').select('players').eq('id', roomCode).maybeSingle();
+    playersMap = (data && data.players) || {};
+  }
   
   for (const pid of order) {
     if (pid === myPlayerId) continue;
     const hand = game.hands?.[pid] || [];
     const isActive = game.turnPlayerId === pid;
-    const playerSnap = await db.ref(`rooms/${roomCode}/players/${pid}`).once('value');
-    const player = playerSnap?.val() || {};
+    const player = playersMap[pid] || {};
     
     container.innerHTML += `<div class="opponent-card ${isActive ? 'active-turn' : ''}">
       <div style="font-size:1.2rem">${player.isBot ? '🤖' : '👤'}</div>
@@ -934,15 +1018,16 @@ function updateDiscardBtn() {
   btn.disabled = !(myTurn && selectedCards.length === 1);
 }
 
-function renderScoreboard(game) {
+function renderScoreboard(game, playersParam) {
   const row = document.getElementById('score-row');
   const total = game.totalScores || {};
   const melds = game.melds || {};
   
   const order = game.playerOrder || [];
-  row.innerHTML = order.map(async pid => {
-    const playerSnap = await db.ref(`rooms/${roomCode}/players/${pid}`).once('value');
-    const player = playerSnap?.val() || {};
+  // Use the passed-in players map when available.
+  const playersMap = (typeof playersParam === 'object' && playersParam !== null) ? playersParam : {};
+  row.innerHTML = order.map(pid => {
+    const player = playersMap[pid] || {};
     const isYou = pid === myPlayerId;
     const pts = total[pid] || 0;
     const meldCount = (melds[pid] || []).length;
@@ -1007,15 +1092,16 @@ async function showEndGame(winnerId, totalScores, roundScores, players) {
   const table = document.getElementById('endgame-table');
   const winnerName = document.getElementById('winner-name');
   
-  const winnerSnap = await db.ref(`rooms/${roomCode}/players/${winnerId}`).once('value');
-  const winner = winnerSnap?.val() || {};
+  // One read of the room row gets us all players.
+  const { data: roomRow } = await db.from('rooms').select('players').eq('id', roomCode).maybeSingle();
+  const playersMap = (roomRow && roomRow.players) || players || {};
+  const winner = playersMap[winnerId] || {};
   winnerName.textContent = `🏆 ${winner.name || '??'} ชนะ!`;
   
   const order = currentGame?.playerOrder || Object.keys(totalScores || {});
   table.innerHTML = `<tr><th>ผู้เล่น</th><th>แต้มรอบนี้</th><th>รวม</th></tr>`;
   for (const pid of order) {
-    const playerSnap = await db.ref(`rooms/${roomCode}/players/${pid}`).once('value');
-    const player = playerSnap?.val() || {};
+    const player = playersMap[pid] || {};
     const isWinner = pid === winnerId;
     const rs = roundScores?.[pid] || 0;
     const ts = totalScores?.[pid] || 0;
@@ -1031,8 +1117,8 @@ async function showEndGame(winnerId, totalScores, roundScores, players) {
 
 async function playAgain() {
   document.getElementById('endgame-modal').classList.remove('active');
-  const snap = await db.ref(`rooms/${roomCode}/players').once('value');
-  const players = snap.val() || {};
+  const { data: roomRow } = await db.from('rooms').select('players').eq('id', roomCode).maybeSingle();
+  const players = (roomRow && roomRow.players) || {};
   await initGame(roomCode, players);
 }
 
