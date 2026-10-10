@@ -1,10 +1,8 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v22
-// Architecture: Supabase as game server - all actions via RPC play_turn()
-// - rpcPlayTurn() helper wraps all game actions
-// - PostgreSQL FOR UPDATE lock prevents race conditions
-// - Version number prevents stale updates
-// - Removed direct update() calls from player actions
+// 🃏 DUMMY RUMMY — game-core.js v23
+// Fix: botPlay was sending myPlayerId (human) instead of botId to RPC
+// - Added playerId parameter to rpcPlayTurn()
+// - All botPlay RPC calls now pass {playerId: botId}
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -270,12 +268,14 @@ function setGame(patch) { var ng = JSON.parse(JSON.stringify(currentGame)); Obje
 
 // --- RPC PLAY TURN: all game actions go through this atomic function ---
 // Returns {ok, game, error, ...} from PostgreSQL play_turn()
+// Pass explicit `playerId` when called from botPlay; otherwise uses myPlayerId
 async function rpcPlayTurn(action, opts) {
   opts = opts || {};
   var version = currentGame ? (currentGame.version || 1) : 1;
+  var playerId = opts.playerId || myPlayerId;
   var payload = {
     p_game_id:          roomCode,
-    p_player_id:        myPlayerId,
+    p_player_id:        playerId,
     p_action:           action,
     p_card_code:        opts.cardCode     || null,
     p_discard_index:   opts.discardIndex || null,
@@ -826,7 +826,7 @@ async function botPlay(botId) {
             var validM = botM.filter(function(m){ return m.cards.some(function(c){ return taken.indexOf(c.code) >= 0; }); });
             if (validM.length > 0) {
               var bmgCodes = validM[0].cards.map(function(c){ return c.code; });
-              var r2 = await rpcPlayTurn('MELD', { meldCodes: bmgCodes });
+              var r2 = await rpcPlayTurn('MELD', { meldCodes: bmgCodes, playerId: botId });
               if (r2) {
                 hand = codesToCards(currentGame.hands[botId] || []);
                 handCodes = hand.map(function(c){ return c.code; });
@@ -841,7 +841,7 @@ async function botPlay(botId) {
 
     // --- DRAW: draw from deck if didn't pick ---
     if (!pickedThisTurn) {
-      var r = await rpcPlayTurn('DRAW_DECK');
+      var r = await rpcPlayTurn('DRAW_DECK', { playerId: botId });
       if (!r) { botRunning[botId] = false; return; }
       if (!r.deckEmpty) {
         hand = codesToCards(currentGame.hands[botId] || []);
@@ -856,7 +856,7 @@ async function botPlay(botId) {
       var vm = findMelds(hand);
       if (vm.length > 0) {
         var m0c = vm[0].cards.map(function(c){ return c.code; });
-        var r = await rpcPlayTurn('MELD', { meldCodes: m0c });
+        var r = await rpcPlayTurn('MELD', { meldCodes: m0c, playerId: botId });
         if (r) {
           hand = codesToCards(currentGame.hands[botId] || []);
           handCodes = hand.map(function(c){ return c.code; });
@@ -871,7 +871,8 @@ async function botPlay(botId) {
         var r = await rpcPlayTurn('LAYOFF', {
           cardCode: lo.layoffCard,
           targetPid: lo.targetPid,
-          targetMeldIdx: lo.meldIndex
+          targetMeldIdx: lo.meldIndex,
+          playerId: botId
         });
         if (r) {
           hand = codesToCards(currentGame.hands[botId] || []);
@@ -891,12 +892,12 @@ async function botPlay(botId) {
 
       if (hand.length === 1) {
         // Knockout!
-        var kr = await rpcPlayTurn('KNOCK');
+        var kr = await rpcPlayTurn('KNOCK', { playerId: botId });
         botRunning[botId] = false;
         return;
       }
 
-      var r = await rpcPlayTurn('DISCARD', { cardCode: dCard.code });
+      var r = await rpcPlayTurn('DISCARD', { cardCode: dCard.code, playerId: botId });
       if (!r) { botRunning[botId] = false; return; }
     }
 
@@ -1441,7 +1442,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v22 Loaded!');
+  console.log('[DummyRummy] v23 Loaded!');
   // Cleanup: delete rooms still in lobby (never started) — skip 'playing' rooms
   if (db) {
     (async function() {
