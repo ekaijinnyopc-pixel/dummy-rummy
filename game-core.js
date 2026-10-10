@@ -1,6 +1,6 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v29
-// - ฺbugfix: PostgreSQL เก็บ totalplayers (lowercase) → อ่านเป็น room.totalplayers
+// 🃏 DUMMY RUMMY — game-core.js v30
+// - hotfix: เปลี่ยน select('*') → explicit columns เพื่อหลีก schema cache 406 error
 // - รอพี่เอรัน SQL schema เพิ่ม column
 // ============================================================
 
@@ -291,7 +291,7 @@ async function rpcPlayTurn(action, opts) {
           (result.error.details && result.error.details.includes('version'))) {
         notify('❌ มีคนเล่นไปแล้ว! กำลังโหลดใหม่...');
         // Force resync
-        var fresh = await db.from('rooms').select('*').eq('id', roomCode).single();
+        var fresh = await db.from('rooms').select('id,code,players,game,status,version,totalplayers').eq('id', roomCode).single();
         if (fresh.data && fresh.data.game) {
           currentGame = fresh.data.game;
           renderGame(currentGame);
@@ -483,7 +483,7 @@ async function joinRoom() {
     if (!db) { notify('กรุณารอสักครู่... กดอีกครั้ง'); return; }
     myName = name;
     myPlayerId = 'p_' + Math.random().toString(36).substr(2, 9);
-    var _data = await db.from('rooms').select('*').eq('id', code).single();
+    var _data = await db.from('rooms').select('id,code,players,status,version,totalplayers').eq('id', code).single();
     if (_data.error || !_data.data) { notify('❌ ไม่พบห้องนี้'); return; }
     var room = _data.data;
     if (room.status === 'playing') { notify('❌ เกมเริ่มแล้ว'); return; }
@@ -702,7 +702,7 @@ async function endTurn() {
 
 async function handleKnockout(koId) {
   try {
-    var _data = await db.from('rooms').select('*').eq('id', roomCode).single();
+    var _data = await db.from('rooms').select('id,code,players,game,status,version,totalplayers').eq('id', roomCode).single();
     if (!_data.data) return;
     var players = _data.data.players || {};
     var game = currentGame;
@@ -1409,7 +1409,7 @@ function startPolling(rid) {
   pollInterval = setInterval(async function() {
     if (!roomCode) { clearInterval(pollInterval); return; }
     try {
-      var _data = await db.from('rooms').select('*').eq('id', rid).single();
+      var _data = await db.from('rooms').select('id,code,players,game,status,version,totalplayers').eq('id', rid).single();
       if (_data.error) {
         if (_data.status === 404) return;
         console.warn('[Poll] error:', _data.status, _data.error.message);
@@ -1454,7 +1454,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v29 Loaded!');
+  console.log('[DummyRummy] v30 Loaded!');
   // Cleanup: delete rooms still in lobby (never started) — skip 'playing' rooms
   if (db) {
     (async function() {
