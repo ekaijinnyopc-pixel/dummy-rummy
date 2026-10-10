@@ -588,6 +588,15 @@ async function advanceTurn() {
   } catch(e) { console.error('advanceTurn error:', e); }
 }
 
+async function doKnock() {
+  try {
+    if (!currentGame || !myTurn) return;
+    var myHand = currentGame.hands[myPlayerId] || [];
+    if (myHand.length !== 0) { notify('ไพ่ต้องเหลือ 0 ใบถึงจะน็อคได้'); return; }
+    await handleKnockout(myPlayerId);
+  } catch(e) { console.error('doKnock error:', e); }
+}
+
 async function endTurn() {
   try {
     if (!currentGame || !myTurn) return;
@@ -626,7 +635,7 @@ async function handleKnockout(koId) {
     roundScores[koId] += knockBonus;
     if (game.headPoints) roundScores[koId] += game.headPoints;
 
-    var prevScores = (_data.data.game && _data.data.game.scores) || {};
+    var prevScores = game.scores || {};
     var totalScores = {};
     for (var ti = 0; ti < game.playerOrder.length; ti++) {
       var tpid = game.playerOrder[ti];
@@ -1237,22 +1246,27 @@ function updateActionBtns() {
     var handStatus = document.getElementById('hand-status');
     if (!currentGame) return;
 
+    var myHand = currentGame.hands[myPlayerId] || [];
+    var isLastCard = myHand.length === 0;
     var hasMeld = currentGame.hasFirstMeld && currentGame.hasFirstMeld[myPlayerId];
     var picked = pendingPickedCodes.length > 0;
-    var canLayoff = layoffTargets && layoffTargets.length > 0 && hasMeld;
+    var btnKnock = document.getElementById('btn-knock');
 
     if (myTurn) {
       var phase = currentGame.phase || 'draw';
-      if (btnDraw) btnDraw.disabled = phase !== 'draw';
+      if (btnDraw) btnDraw.disabled = phase !== 'draw' || isLastCard;
       if (btnMeld) btnMeld.disabled = false;
-      if (btnDiscard) btnDiscard.disabled = !(selectedCards.length === 1 && !picked);
+      if (btnDiscard) btnDiscard.disabled = !(selectedCards.length === 1 && !picked && !isLastCard);
       if (btnEnd) btnEnd.disabled = !(phase === 'action' && !picked);
+      if (btnKnock) btnKnock.style.display = isLastCard && phase === 'action' ? 'inline-block' : 'none';
 
-      if (picked) handStatus.textContent = '⚠️ ต้องเกิดใบที่หยิบจากกองทิ้งก่อน!';
+      if (isLastCard) handStatus.textContent = '🔔 ไพ่หมด! กดปุ่ม 🔔 น็อค!';
+      else if (picked) handStatus.textContent = '⚠️ ต้องเกิดใบที่หยิบจากกองทิ้งก่อน!';
       else if (phase === 'draw') handStatus.textContent = '📦 จั่วหรือหยิบจากกองทิ้ง';
       else handStatus.textContent = '🃏 เลือกไพ่ 1 ใบที่จะทิ้ง แล้วกดปุ่ม 🗑️ ทิ้ง';
     } else {
       [btnDraw, btnMeld, btnDiscard, btnEnd].forEach(function(b){ if(b) b.disabled = true; });
+      if (btnKnock) btnKnock.style.display = 'none';
       if (handStatus) handStatus.textContent = '⏳ รอตาคนอื่น...';
     }
   } catch(e) {}
