@@ -1,7 +1,6 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v28
-// - ถอด totalPlayers ออกจาก upsert → ตารางยังไม่มี column นี้
-// - Lobby ยังแสดงจำนวนคนได้ (JS variable อย่างเดียว)
+// 🃏 DUMMY RUMMY — game-core.js v29
+// - ฺbugfix: PostgreSQL เก็บ totalplayers (lowercase) → อ่านเป็น room.totalplayers
 // - รอพี่เอรัน SQL schema เพิ่ม column
 // ============================================================
 
@@ -422,7 +421,7 @@ async function setupRealtime(rid) {
         if (!room) { console.log('[RT] no room data'); return; }
         console.log('[RT] received:', room.status, '| turn:', room.game ? room.game.turnPlayerId : 'no game');
         if (room.status === 'lobby') {
-          totalPlayers = room.totalPlayers || 4;
+          totalPlayers = room.totalplayers || 4;
           renderLobby(room.players || {}, totalPlayers);
         }
         else if (room.status === 'playing' && room.game) {
@@ -465,7 +464,7 @@ async function createRoom() {
     myPlayerId = 'p_' + Math.random().toString(36).substr(2, 9);
     var players = {};
     players[myPlayerId] = { id: myPlayerId, name: name, isBot: false, isHost: true };
-    var _data = await db.from('rooms').upsert({ id: roomCode, code: roomCode, players: players, status: 'lobby' });
+    var _data = await db.from('rooms').upsert({ id: roomCode, code: roomCode, players: players, status: 'lobby', totalplayers: totalPlayers });
     if (_data.error) { notify('❌ สร้างห้องไม่สำเร็จ'); return; }
     showScreen('lobby-screen');
     document.getElementById('display-room-code').textContent = roomCode;
@@ -490,11 +489,11 @@ async function joinRoom() {
     if (room.status === 'playing') { notify('❌ เกมเริ่มแล้ว'); return; }
     var players = Object.assign({}, room.players || {});
     var keys = Object.keys(players);
-    if (keys.length >= (room.totalPlayers || 4)) { notify('❌ ห้องเต็มแล้ว'); return; }
+    if (keys.length >= (room.totalplayers || 4)) { notify('❌ ห้องเต็มแล้ว'); return; }
     players[myPlayerId] = { id: myPlayerId, name: name, isBot: false, isHost: false };
     await db.from('rooms').update({ players: players }).eq('id', code);
     roomCode = code;
-    totalPlayers = room.totalPlayers || 4;
+    totalPlayers = room.totalplayers || 4;
     showScreen('lobby-screen');
     document.getElementById('display-room-code').textContent = code;
     await setupRealtime(code);
@@ -1455,7 +1454,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v28 Loaded!');
+  console.log('[DummyRummy] v29 Loaded!');
   // Cleanup: delete rooms still in lobby (never started) — skip 'playing' rooms
   if (db) {
     (async function() {
