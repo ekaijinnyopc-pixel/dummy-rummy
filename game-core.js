@@ -1,6 +1,6 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v16
-// Fix: cleanupOldRooms 400 error, botWithTimeout null check, debug logs
+// 🃏 DUMMY RUMMY — game-core.js v17
+// Fix: remove updated_at from cleanup (column doesn't exist), better poll error handling
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -1436,16 +1436,24 @@ function startPolling(rid) {
     if (!roomCode) { clearInterval(pollInterval); return; }
     try {
       var _data = await db.from('rooms').select('*').eq('id', rid).single();
-      if (_data.data && _data.data.game) {
-        var remoteGame = _data.data;
-        if (JSON.stringify(remoteGame.game) !== JSON.stringify(currentGame)) {
-          currentGame = remoteGame.game;
-          if (remoteGame.status === 'playing') renderGame(currentGame);
-          else if (remoteGame.status === 'ended') showEndGame({ winner: remoteGame.winner, totalScores: remoteGame.totalScores, players: remoteGame.players });
+      if (_data.error) {
+        if (_data.status === 404) return; // room gone
+        console.warn('[Poll] error:', _data.status, _data.error.message);
+        return;
+      }
+      if (_data.data) {
+        var remoteRoom = _data.data;
+        if (remoteRoom.game) {
+          var changed = JSON.stringify(remoteRoom.game) !== JSON.stringify(currentGame);
+          if (changed) {
+            currentGame = remoteRoom.game;
+            if (remoteRoom.status === 'playing') renderGame(currentGame);
+            else if (remoteRoom.status === 'ended') showEndGame({ winner: remoteRoom.winner, totalScores: remoteRoom.totalScores, players: remoteRoom.players });
+          }
         }
       }
-    } catch(e) {}
-  }, 1000);
+    } catch(e) { console.warn('[Poll] exception:', e.message); }
+  }, 1500);
 }
 
 function stopPolling() {
@@ -1459,21 +1467,18 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v16 Loaded!');
-  // Cleanup old rooms — simple delete by updated_at (no chaining that causes 400)
+  console.log('[DummyRummy] v17 Loaded!');
+  // Cleanup: delete rooms still in lobby (never started) — skip 'playing' rooms
   if (db) {
     (async function() {
       try {
-        var thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-        var oldRooms = await db.from('rooms').select('id, status').lt('updated_at', thirtyMinAgo);
-        if (oldRooms.data && oldRooms.data.length > 0) {
-          for (var ri = 0; ri < oldRooms.data.length; ri++) {
-            if (oldRooms.data[ri].status !== 'playing') {
-              await db.from('rooms').delete().eq('id', oldRooms.data[ri].id);
-            }
+        var lobbies = await db.from('rooms').select('id, status').eq('status', 'lobby').limit(20);
+        if (lobbies.data && lobbies.data.length > 0) {
+          for (var ri = 0; ri < lobbies.data.length; ri++) {
+            await db.from('rooms').delete().eq('id', lobbies.data[ri].id).eq('status', 'lobby');
           }
         }
-      } catch(e) { console.warn('[Cleanup] error:', e); }
+      } catch(e) { console.warn('[Cleanup] skipped:', e.message); }
     })();
   }
 });
