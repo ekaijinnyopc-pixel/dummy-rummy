@@ -1,8 +1,8 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v23
-// Fix: botPlay was sending myPlayerId (human) instead of botId to RPC
-// - Added playerId parameter to rpcPlayTurn()
-// - All botPlay RPC calls now pass {playerId: botId}
+// 🃏 DUMMY RUMMY — game-core.js v24
+// Pause bots → test human-only game first
+// - Hand sizes: 2 players=11 cards, 3 players=9, 4 players=7
+// - No bots needed for testing — just play in multiple tabs/browsers
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -527,11 +527,13 @@ async function startGame() {
     var players = _data.data.players || {};
     var playerIds = Object.keys(players);
     if (playerIds.length < 2) { notify('ต้องมีอย่างน้อย 2 คน'); return; }
+    // 2 players → 11 cards, 3 → 9 cards, 4 → 7 cards
+    var HAND_SIZE = playerIds.length === 2 ? 11 : playerIds.length === 3 ? 9 : 7;
     var deck = shuffle(makeDeck());
     var hands = {};
     for (var pi = 0; pi < playerIds.length; pi++) {
       var handCards = [];
-      for (var di = 0; di < 7; di++) handCards.push(deck.pop().code);
+      for (var di = 0; di < HAND_SIZE; di++) handCards.push(deck.pop().code);
       hands[playerIds[pi]] = handCards;
     }
     var firstCard = deck.pop();
@@ -1354,7 +1356,8 @@ async function playAgain() {
     if (pids.length < 2) return;
     var deck = shuffle(makeDeck());
     var hands = {};
-    for (var pi = 0; pi < pids.length; pi++) { var h = []; for (var di = 0; di < 7; di++) h.push(deck.pop().code); hands[pids[pi]] = h; }
+    var HAND_SIZE2 = pids.length === 2 ? 11 : pids.length === 3 ? 9 : 7;
+    for (var pi = 0; pi < pids.length; pi++) { var h = []; for (var di = 0; di < HAND_SIZE2; di++) h.push(deck.pop().code); hands[pids[pi]] = h; }
     var fc = deck.pop();
     var hp = (fc.code === '2♣' || fc.code === 'Q♠') ? 100 : 50;
     var gameData = {
@@ -1442,7 +1445,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v23 Loaded!');
+  console.log('[DummyRummy] v24 Loaded!');
   // Cleanup: delete rooms still in lobby (never started) — skip 'playing' rooms
   if (db) {
     (async function() {
