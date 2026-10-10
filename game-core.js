@@ -1,6 +1,6 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v17
-// Fix: remove updated_at from cleanup (column doesn't exist), better poll error handling
+// 🃏 DUMMY RUMMY — game-core.js v18
+// Add: comprehensive debug logs for bot/realtime/polling flow
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -361,26 +361,31 @@ async function setupRealtime(rid) {
     realtimeChannel.on('postgres_changes', { event:'*', schema:'public', table:'rooms', filter:'id=eq.'+rid }, function(payload) {
       try {
         var room = payload.new;
-        if (!room) return;
+        if (!room) { console.log('[RT] no room data'); return; }
+        console.log('[RT] received:', room.status, '| turn:', room.game ? room.game.turnPlayerId : 'no game');
         if (room.status === 'lobby') renderLobby(room.players || {});
         else if (room.status === 'playing' && room.game) {
           currentGame = room.game;
           showScreen('game-screen');
           renderGame(room.game);
-          // Trigger bot from realtime callback ONLY (not from advanceTurn)
-          if (currentGame.status === 'playing' && currentGame.turnPlayerId.indexOf('bot_') === 0) {
+          // Trigger bot from realtime callback ONLY
+          if (currentGame.status === 'playing' && currentGame.turnPlayerId && currentGame.turnPlayerId.indexOf('bot_') === 0) {
             var pid = currentGame.turnPlayerId;
+            console.log('[RT] BOT TURN:', pid, '| botRunning:', botRunning[pid]);
             if (!botRunning[pid]) {
               botRunning[pid] = true;
+              console.log('[RT] Starting botWithTimeout for', pid);
               setTimeout(function() {
                 botWithTimeout(pid);
               }, 800);
             }
+          } else {
+            console.log('[RT] Not bot turn, myTurn=', currentGame.turnPlayerId);
           }
         } else if (room.status === 'ended') {
           showEndGame({ winner: room.winner, totalScores: room.totalScores, players: room.players });
         }
-      } catch(e) { console.error('realtime callback error:', e); }
+      } catch(e) { console.error('[RT] callback error:', e); }
     });
     await realtimeChannel.subscribe();
     startPolling(rid);
@@ -643,6 +648,7 @@ async function advanceTurn() {
     var idx = order.indexOf(currentGame.turnPlayerId);
     var nextIdx = (idx + 1) % order.length;
     var nextPid = order[nextIdx];
+    console.log('[Turn] advancing from', currentGame.turnPlayerId, 'to', nextPid);
     currentGame = Object.assign({}, currentGame, { turnPlayerId: nextPid, phase: 'draw', turnStartTime: Date.now() });
     await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
     renderGame(currentGame);
@@ -720,39 +726,38 @@ async function handleKnockout(koId) {
 
 // --- BOT with timeout safety ---
 function botWithTimeout(botId) {
+  console.log('[Bot] botWithTimeout START for', botId);
   var done = false;
   setTimeout(function() {
     if (!done) {
       console.warn('[Bot] TIMEOUT for', botId, '- forcing advance');
       botRunning[botId] = false;
       (function() {
+        if (!currentGame || !roomCode) { console.warn('[Bot] timeout skip: no game or room'); return; }
         var order = currentGame.playerOrder;
         var idx = order.indexOf(botId);
-        if (idx < 0) return;
+        if (idx < 0) { console.warn('[Bot] timeout: bot not in order'); return; }
         var nextIdx = (idx + 1) % order.length;
         var nextPid = order[nextIdx];
         currentGame.turnPlayerId = nextPid;
         currentGame.phase = 'draw';
         currentGame.turnStartTime = Date.now();
         db.from('rooms').update({ game: currentGame }).eq('id', roomCode).then(function() {
+          console.log('[Bot] timeout advanced to', nextPid);
           renderGame(currentGame);
-          var _d = null;
-          db.from('rooms').select('players').eq('id', roomCode).single().then(function(_d) {
-            var players = (_d && _d.data && _d.data.players) || {};
-            var np = players[nextPid];
-            if (np && np.isBot && currentGame.status === 'playing') {
-              setTimeout(function() { botWithTimeout(nextPid); }, 600);
-            }
-          }).catch(function(){});
-        }).catch(function(){});
+          if (nextPid.indexOf('bot_') === 0 && currentGame.status === 'playing') {
+            setTimeout(function() { botWithTimeout(nextPid); }, 800);
+          }
+        }).catch(function(e) { console.error('[Bot] timeout update failed:', e); botRunning[botId] = false; });
       })();
     }
   }, 8000);
   botPlay(botId).then(function() {
     done = true;
+    console.log('[Bot] botPlay DONE for', botId);
   }).catch(function(e) {
     done = true;
-    console.error('[Bot] error:', botId, e);
+    console.error('[Bot] botPlay ERROR:', botId, e.message);
     botRunning[botId] = false;
   });
 }
@@ -1437,7 +1442,7 @@ function startPolling(rid) {
     try {
       var _data = await db.from('rooms').select('*').eq('id', rid).single();
       if (_data.error) {
-        if (_data.status === 404) return; // room gone
+        if (_data.status === 404) return;
         console.warn('[Poll] error:', _data.status, _data.error.message);
         return;
       }
@@ -1446,9 +1451,22 @@ function startPolling(rid) {
         if (remoteRoom.game) {
           var changed = JSON.stringify(remoteRoom.game) !== JSON.stringify(currentGame);
           if (changed) {
+            console.log('[Poll] game changed, turn:', remoteRoom.game.turnPlayerId);
             currentGame = remoteRoom.game;
-            if (remoteRoom.status === 'playing') renderGame(currentGame);
-            else if (remoteRoom.status === 'ended') showEndGame({ winner: remoteRoom.winner, totalScores: remoteRoom.totalScores, players: remoteRoom.players });
+            if (remoteRoom.status === 'playing') {
+              renderGame(currentGame);
+              // Also trigger bot from polling as backup
+              if (currentGame.turnPlayerId && currentGame.turnPlayerId.indexOf('bot_') === 0) {
+                var pid = currentGame.turnPlayerId;
+                if (!botRunning[pid]) {
+                  console.log('[Poll] triggering bot for', pid);
+                  botRunning[pid] = true;
+                  botWithTimeout(pid);
+                }
+              }
+            } else if (remoteRoom.status === 'ended') {
+              showEndGame({ winner: remoteRoom.winner, totalScores: remoteRoom.totalScores, players: remoteRoom.players });
+            }
           }
         }
       }
@@ -1467,7 +1485,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v17 Loaded!');
+  console.log('[DummyRummy] v18 Loaded!');
   // Cleanup: delete rooms still in lobby (never started) — skip 'playing' rooms
   if (db) {
     (async function() {
