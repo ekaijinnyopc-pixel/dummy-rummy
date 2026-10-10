@@ -1,7 +1,10 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v21
-// Fix: setGame() deep-copy helper so JSON.stringify comparison always detects changes
-// Fix: all state updates use setGame() instead of Object.assign
+// 🃏 DUMMY RUMMY — game-core.js v22
+// Architecture: Supabase as game server - all actions via RPC play_turn()
+// - rpcPlayTurn() helper wraps all game actions
+// - PostgreSQL FOR UPDATE lock prevents race conditions
+// - Version number prevents stale updates
+// - Removed direct update() calls from player actions
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -264,6 +267,58 @@ var realtimeChannel = null;
 var currentGame = null;
 // Helper: deep-copy currentGame and apply patch, so JSON.stringify comparison always detects changes
 function setGame(patch) { var ng = JSON.parse(JSON.stringify(currentGame)); Object.assign(ng, patch); currentGame = ng; }
+
+// --- RPC PLAY TURN: all game actions go through this atomic function ---
+// Returns {ok, game, error, ...} from PostgreSQL play_turn()
+async function rpcPlayTurn(action, opts) {
+  opts = opts || {};
+  var version = currentGame ? (currentGame.version || 1) : 1;
+  var payload = {
+    p_game_id:          roomCode,
+    p_player_id:        myPlayerId,
+    p_action:           action,
+    p_card_code:        opts.cardCode     || null,
+    p_discard_index:   opts.discardIndex || null,
+    p_meld_codes:       opts.meldCodes    || null,
+    p_target_pid:       opts.targetPid    || null,
+    p_target_meld_idx: opts.targetMeldIdx|| null,
+    p_expected_version: version
+  };
+  try {
+    var result = await db.rpc('play_turn', payload);
+    if (result.error) {
+      console.warn('[RPC]', action, 'error:', result.error.message);
+      if (result.error.message === 'VERSION_MISMATCH' ||
+          (result.error.details && result.error.details.includes('version'))) {
+        notify('❌ มีคนเล่นไปแล้ว! กำลังโหลดใหม่...');
+        // Force resync
+        var fresh = await db.from('rooms').select('*').eq('id', roomCode).single();
+        if (fresh.data && fresh.data.game) {
+          currentGame = fresh.data.game;
+          renderGame(currentGame);
+        }
+      }
+      return null;
+    }
+    var data = result.data;
+    if (!data || !data.ok) {
+      console.warn('[RPC]', action, 'failed:', data ? data.error : 'unknown');
+      if (data && data.error === 'NOT_YOUR_TURN') {
+        notify('ไม่ใช่ตาของคุณ!');
+      }
+      return null;
+    }
+    // Update currentGame from server response
+    if (data.game) {
+      currentGame = data.game;
+      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
+    }
+    return data;
+  } catch(e) {
+    console.error('[RPC]', action, 'exception:', e.message);
+    return null;
+  }
+}
 var selectedCards = [];
 var myTurn = false;
 var pendingPickedCodes = [];   // codes picked from discard this turn (must meld)
@@ -499,7 +554,8 @@ async function startGame() {
       hasFirstMeld: {},
       lastDiscard: null,
       deckEmpty: false,
-      pickedFromDiscard: {}
+      pickedFromDiscard: {},
+      version: 1
     };
     for (var mi = 0; mi < playerIds.length; mi++) {
       gameData.melds[playerIds[mi]] = [];
@@ -526,26 +582,14 @@ async function startGame() {
 async function drawCard() {
   try {
     if (!currentGame || !myTurn || currentGame.phase !== 'draw') return;
-    var deck = currentGame.deck.slice();
-    if (deck.length === 0) {
-      setGame({ phase: 'action', deckEmpty: true, turnStartTime: Date.now() });
-      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-      renderGame(currentGame);
-      notify('📦 กองจั่วหมดแล้ว! ทิ้งไพ่ได้เลย');
-      return;
-    }
-    var drawnCode = deck.pop();
-    var drawnCard = codeToCard(drawnCode);
-    var newHands = Object.assign({}, currentGame.hands);
-    newHands[myPlayerId] = (newHands[myPlayerId] || []).concat([drawnCode]);
+    var r = await rpcPlayTurn('DRAW_DECK');
+    if (!r) return;
+    if (r.deckEmpty) notify('📦 กองจั่วหมดแล้ว! ทิ้งไพ่ได้เลย');
     pendingPickedCodes = [];
-    setGame({ deck: deck, hands: newHands, phase: 'action', turnStartTime: Date.now() });
-    await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
     renderYourHand();
     updateLayoffTargets();
     updateActionBtns();
     resetPlayerTimer();
-    notify('📦 จั่วได้: ' + (drawnCard ? drawnCard.rank + drawnCard.suit : drawnCode));
   } catch(e) { console.error('drawCard error:', e); }
 }
 
@@ -556,45 +600,25 @@ async function pickFromDiscard(idx) {
     var discard = currentGame.discardPile.slice();
     if (discard.length === 0 || idx < 0 || idx >= discard.length) return;
 
-    var taken = discard.slice(idx);       // [card_i ... card_last]
-    var remaining = discard.slice(0, idx);  // [card_0 ... card_i-1]
+    var taken = discard.slice(idx);
     var handCodes = currentGame.hands[myPlayerId] || [];
     var meldable = canMeldWithPicked(taken, handCodes);
-
     if (!meldable) {
       notify('❌ หยิบใบนี้ต้องเกิดได้ทันที! ลองใบอื่น');
       return;
     }
 
-    // Track ทิ้งมี่: whoever discarded the card we're picking
-    var discardOwner = currentGame.lastDiscard ? currentGame.lastDiscard.playerId : null;
+    var r = await rpcPlayTurn('PICK_DISCARD', { discardIndex: idx });
+    if (!r) return;
 
     pendingPickedCodes = taken;
-    var newHands = Object.assign({}, currentGame.hands);
-    newHands[myPlayerId] = handCodes.concat(taken);
-    var newPicked = Object.assign({}, currentGame.pickedFromDiscard || {});
-    newPicked[myPlayerId] = taken;
-
-    // Apply ทิ้งมี่ penalty
-    if (discardOwner && discardOwner !== myPlayerId) {
-      var scores = Object.assign({}, currentGame.scores || {});
-      scores[discardOwner] = (scores[discardOwner] || 0) - 100;
-      setGame({ scores: scores });
-    }
-
-    setGame({
-      hands: newHands,
-      discardPile: remaining,
-      phase: 'action',
-      turnStartTime: Date.now(),
-      pickedFromDiscard: newPicked,
-      lastDiscard: null
-    });
-    await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
     renderYourHand();
-    // Open meld modal — player MUST meld with picked cards
     openMeldModal(taken);
-    notify('🗑️ หยิบได้แล้ว! ต้องเกิดใบที่หยิบทันที');
+    if (r.mii_penalty) {
+      notify('⚠️ ทิ้งมี่! -100 แต้ม');
+    } else {
+      notify('🗑️ หยิบได้แล้ว! ต้องเกิดใบที่หยิบทันที');
+    }
   } catch(e) { console.error('pickFromDiscard error:', e); }
 }
 
@@ -610,37 +634,24 @@ async function discardSelected() {
     if (handCodes.indexOf(cardCode) === -1) { notify('❌ ไม่สามารถทิ้งไพ่ที่หยิบจากกองทิ้งมาได้'); return; }
 
     var card = codeToCard(cardCode);
-    var newHand = handCodes.filter(function(c){ return c !== cardCode; });
     selectedCards = [];
     pendingPickedCodes = [];
 
-    // Speto discard penalty
-    if (isSpeto(card)) {
-      var scores = Object.assign({}, currentGame.scores || {});
-      scores[myPlayerId] = (scores[myPlayerId] || 0) - 100;
-      setGame({ scores: scores });
-    }
+    var r = await rpcPlayTurn('DISCARD', { cardCode: cardCode });
+    if (!r) return;
 
-    if (newHand.length === 0) {
-      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-      await handleKnockout(myPlayerId);
+    // Check for speto notification (handled in RPC, but notify player)
+    if (isSpeto(card)) notify('⚠️ ทิ้งสเปโต! -100 แต้ม');
+
+    // Check for knockout
+    if (r.game && r.game.status === 'ended') {
+      showEndGame({ winner: myPlayerId, totalScores: r.game.scores, roundScores: r.round_scores, players: {} });
       return;
     }
 
-    var newDiscard = currentGame.discardPile.concat([cardCode]);
-    var newHands = Object.assign({}, currentGame.hands);
-    newHands[myPlayerId] = newHand;
-    var newLastDiscard = { playerId: myPlayerId, cardCode: cardCode };
-
-    setGame({
-      hands: newHands,
-      discardPile: newDiscard,
-      phase: 'draw',
-      turnStartTime: Date.now(),
-      lastDiscard: newLastDiscard
-    });
-    await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
-    await advanceTurn();
+    renderYourHand();
+    updateActionBtns();
+    resetPlayerTimer();
   } catch(e) { console.error('discardSelected error:', e); }
 }
 
@@ -664,7 +675,14 @@ async function doKnock() {
     if (!currentGame || !myTurn) return;
     var myHand = currentGame.hands[myPlayerId] || [];
     if (myHand.length !== 0) { notify('ไพ่ต้องเหลือ 0 ใบถึงจะน็อคได้'); return; }
-    await handleKnockout(myPlayerId);
+    var r = await rpcPlayTurn('KNOCK');
+    if (!r) return;
+    // Fetch players for showEndGame
+    var _p = await db.from('rooms').select('players').eq('id', roomCode).single();
+    var players = (_p && _p.data && _p.data.players) || {};
+    var roundScores = r.round_scores || {};
+    var totalScores = (r.game && r.game.scores) || currentGame.scores || {};
+    showEndGame({ winner: myPlayerId, totalScores: totalScores, roundScores: roundScores, players: players });
   } catch(e) { console.error('doKnock error:', e); }
 }
 
@@ -673,7 +691,9 @@ async function endTurn() {
     if (!currentGame || !myTurn) return;
     if (currentGame.phase === 'draw') { notify('ต้องจั่วหรือหยิบจากกองทิ้งก่อน!'); return; }
     if (pendingPickedCodes.length > 0) { notify('❌ ต้องเกิดใบที่หยิบจากกองทิ้งก่อน!'); return; }
-    await advanceTurn();
+    var r = await rpcPlayTurn('END_TURN');
+    if (!r) return;
+    resetPlayerTimer();
   } catch(e) { console.error('endTurn error:', e); }
 }
 
@@ -773,20 +793,17 @@ async function botPlay(botId) {
 
     await delay(600);
 
-    // Re-read current game state
+    // Re-read current game state from DB (now includes version)
     var _data = await db.from('rooms').select('game').eq('id', roomCode).single();
     if (_data.data && _data.data.game) {
       currentGame = _data.data.game;
-      console.log('[Bot] re-read turn:', currentGame.turnPlayerId, 'phase:', currentGame.phase);
+      console.log('[Bot] re-read turn:', currentGame.turnPlayerId, 'phase:', currentGame.phase, 'version:', currentGame.version);
     }
     if (!currentGame || currentGame.turnPlayerId !== botId) { console.log('[Bot] RETURN: after re-read not my turn'); botRunning[botId] = false; return; }
 
     var handCodes = currentGame.hands[botId] || [];
     var hand = codesToCards(handCodes);
     var pickedThisTurn = false;
-
-    // Helper to update DB without breaking on errors
-    function saveGame() { return db.from('rooms').update({ game: currentGame }).eq('id', roomCode); }
 
     // --- DRAW: try pick from discard first ---
     if (currentGame.discardPile && currentGame.discardPile.length > 0) {
@@ -795,26 +812,12 @@ async function botPlay(botId) {
         var taken = discard.slice(di);
         var meldable = canMeldWithPicked(taken, handCodes);
         if (meldable) {
-          var remaining = discard.slice(0, di);
-          var newHandCodes = handCodes.concat(taken);
-          var newPicked = Object.assign({}, currentGame.pickedFromDiscard || {});
-          newPicked[botId] = taken;
-          var discardOwner = currentGame.lastDiscard ? currentGame.lastDiscard.playerId : null;
-          if (discardOwner && discardOwner !== botId) {
-            var sc = Object.assign({}, currentGame.scores || {});
-            sc[discardOwner] = (sc[discardOwner] || 0) - 100;
-            currentGame.scores = sc;
-          }
-          currentGame.hands[botId] = newHandCodes;
-          currentGame.discardPile = remaining;
-          currentGame.phase = 'action';
-          currentGame.turnStartTime = Date.now();
-          currentGame.pickedFromDiscard = newPicked;
-          currentGame.lastDiscard = null;
-          try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
-          hand = codesToCards(newHandCodes);
-          handCodes = newHandCodes;
+          var r = await rpcPlayTurn('PICK_DISCARD', { discardIndex: di });
+          if (!r) { botRunning[botId] = false; return; }
+          hand = codesToCards(currentGame.hands[botId] || []);
+          handCodes = hand.map(function(c){ return c.code; });
           pickedThisTurn = true;
+          await delay(300);
 
           // Meld picked cards immediately
           var hasFM = currentGame.hasFirstMeld && currentGame.hasFirstMeld[botId];
@@ -822,20 +825,13 @@ async function botPlay(botId) {
             var botM = findMelds(hand);
             var validM = botM.filter(function(m){ return m.cards.some(function(c){ return taken.indexOf(c.code) >= 0; }); });
             if (validM.length > 0) {
-              var bmg = validM[0];
-              var bmgCodes = bmg.cards.map(function(c){ return c.code; });
-              var nbh = hand.filter(function(c){ return bmgCodes.indexOf(c.code) === -1; });
-              if (!currentGame.melds) currentGame.melds = {};
-              if (!currentGame.melds[botId]) currentGame.melds[botId] = [];
-              currentGame.melds[botId].push(bmgCodes);
-              if (!currentGame.hasFirstMeld) currentGame.hasFirstMeld = {};
-              currentGame.hasFirstMeld[botId] = true;
-              var np2 = Object.assign({}, currentGame.pickedFromDiscard || {});
-              delete np2[botId];
-              currentGame.pickedFromDiscard = np2;
-              currentGame.hands[botId] = nbh.map(function(c){ return c.code; });
-              try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
-              hand = nbh; handCodes = nbh.map(function(c){ return c.code; });
+              var bmgCodes = validM[0].cards.map(function(c){ return c.code; });
+              var r2 = await rpcPlayTurn('MELD', { meldCodes: bmgCodes });
+              if (r2) {
+                hand = codesToCards(currentGame.hands[botId] || []);
+                handCodes = hand.map(function(c){ return c.code; });
+              }
+              await delay(300);
             }
           }
           break;
@@ -844,21 +840,14 @@ async function botPlay(botId) {
     }
 
     // --- DRAW: draw from deck if didn't pick ---
-    if (!pickedThisTurn && currentGame.deck.length > 0) {
-      var dk = currentGame.deck.slice();
-      var dr = dk.pop();
-      hand = sortHand(hand.concat([codeToCard(dr)]));
-      handCodes = hand.map(function(c){ return c.code; });
-      currentGame.deck = dk;
-      currentGame.hands[botId] = handCodes;
-      currentGame.phase = 'action';
-      currentGame.turnStartTime = Date.now();
-      try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
+    if (!pickedThisTurn) {
+      var r = await rpcPlayTurn('DRAW_DECK');
+      if (!r) { botRunning[botId] = false; return; }
+      if (!r.deckEmpty) {
+        hand = codesToCards(currentGame.hands[botId] || []);
+        handCodes = hand.map(function(c){ return c.code; });
+      }
       await delay(300);
-    } else if (!pickedThisTurn) {
-      currentGame.phase = 'action';
-      currentGame.deckEmpty = true;
-      try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
     }
 
     // --- ACTION: meld (first meld if not yet) ---
@@ -866,17 +855,12 @@ async function botPlay(botId) {
     if (!hasFM2) {
       var vm = findMelds(hand);
       if (vm.length > 0) {
-        var m0 = vm[0];
-        var m0c = m0.cards.map(function(c){ return c.code; });
-        var nh = hand.filter(function(c){ return m0c.indexOf(c.code) === -1; });
-        if (!currentGame.melds) currentGame.melds = {};
-        if (!currentGame.melds[botId]) currentGame.melds[botId] = [];
-        currentGame.melds[botId].push(m0c);
-        if (!currentGame.hasFirstMeld) currentGame.hasFirstMeld = {};
-        currentGame.hasFirstMeld[botId] = true;
-        currentGame.hands[botId] = nh.map(function(c){ return c.code; });
-        try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
-        hand = nh; handCodes = nh.map(function(c){ return c.code; });
+        var m0c = vm[0].cards.map(function(c){ return c.code; });
+        var r = await rpcPlayTurn('MELD', { meldCodes: m0c });
+        if (r) {
+          hand = codesToCards(currentGame.hands[botId] || []);
+          handCodes = hand.map(function(c){ return c.code; });
+        }
         await delay(300);
       }
     } else {
@@ -884,18 +868,15 @@ async function botPlay(botId) {
       var los = findAllLayoffs(handCodes, currentGame);
       if (los.length > 0) {
         var lo = los[0];
-        var nloh = hand.filter(function(c){ return c.code !== lo.layoffCard; });
-        if (!currentGame.melds) currentGame.melds = {};
-        var tMeld = currentGame.melds[lo.targetPid] || [];
-        var mi2 = -1;
-        for (var mii = 0; mii < tMeld.length; mii++) {
-          if (JSON.stringify(tMeld[mii]) === JSON.stringify(lo.targetMeld)) { mi2 = mii; break; }
+        var r = await rpcPlayTurn('LAYOFF', {
+          cardCode: lo.layoffCard,
+          targetPid: lo.targetPid,
+          targetMeldIdx: lo.meldIndex
+        });
+        if (r) {
+          hand = codesToCards(currentGame.hands[botId] || []);
+          handCodes = hand.map(function(c){ return c.code; });
         }
-        if (mi2 >= 0) tMeld[mi2] = tMeld[mi2].concat([lo.layoffCard]);
-        currentGame.melds[lo.targetPid] = tMeld;
-        currentGame.hands[botId] = nloh.map(function(c){ return c.code; });
-        try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
-        hand = nloh; handCodes = nloh.map(function(c){ return c.code; });
         await delay(300);
       }
     }
@@ -907,32 +888,20 @@ async function botPlay(botId) {
       if (canD.length === 0) canD = hand;
       var sD = canD.filter(function(c){ return isSpeto(c); });
       var dCard = sD.length > 0 ? sD[0] : canD[canD.length - 1];
-      var nh3 = hand.filter(function(c){ return c.code !== dCard.code; });
-      var np3 = Object.assign({}, currentGame.pickedFromDiscard || {});
-      delete np3[botId];
-      var nLD = { playerId: botId, cardCode: dCard.code };
-      if (nh3.length === 0) {
-        currentGame.hands[botId] = [];
-        currentGame.discardPile = (currentGame.discardPile||[]).concat([dCard.code]);
-        currentGame.pickedFromDiscard = np3;
-        currentGame.lastDiscard = nLD;
-        try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
+
+      if (hand.length === 1) {
+        // Knockout!
+        var kr = await rpcPlayTurn('KNOCK');
         botRunning[botId] = false;
-        await handleKnockout(botId);
         return;
       }
-      currentGame.hands[botId] = nh3.map(function(c){ return c.code; });
-      currentGame.discardPile = (currentGame.discardPile||[]).concat([dCard.code]);
-      currentGame.phase = 'draw';
-      currentGame.turnStartTime = Date.now();
-      currentGame.pickedFromDiscard = np3;
-      currentGame.lastDiscard = nLD;
-      try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
+
+      var r = await rpcPlayTurn('DISCARD', { cardCode: dCard.code });
+      if (!r) { botRunning[botId] = false; return; }
     }
 
     botRunning[botId] = false;
-    console.log('[Bot] calling advanceTurn');
-    await advanceTurn();
+    console.log('[Bot] turn done for', botId);
   } catch(e) {
     console.error('[Bot] EXCEPTION:', e.message, e.stack ? e.stack.split('\n')[1] : '');
     botRunning[botId] = false;
@@ -1014,28 +983,12 @@ async function confirmMeld() {
   try {
     var meld = window._selectedMeld;
     if (!meld) return;
-    var handCodes = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
     var meldedCodes = meld.cards.map(function(c){ return c.code; });
-    var newHandCodes = handCodes.filter(function(c){ return meldedCodes.indexOf(c) === -1; });
-    var allMelds = (currentGame.melds && currentGame.melds[myPlayerId] ? currentGame.melds[myPlayerId] : []).concat([meldedCodes]);
-    var newMelds = Object.assign({}, currentGame.melds || {});
-    newMelds[myPlayerId] = allMelds;
-    var newHasFirstMeld = Object.assign({}, currentGame.hasFirstMeld || {});
-    var isFirstMeld = !newHasFirstMeld[myPlayerId];
-    if (isFirstMeld) newHasFirstMeld[myPlayerId] = true;
-    var newPicked = Object.assign({}, currentGame.pickedFromDiscard || {});
-    delete newPicked[myPlayerId];
-    pendingPickedCodes = [];
-
-    setGame({
-      hands: Object.assign({}, currentGame.hands, { [myPlayerId]: newHandCodes }),
-      melds: newMelds,
-      hasFirstMeld: newHasFirstMeld,
-      pickedFromDiscard: newPicked
-    });
-    await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+    var r = await rpcPlayTurn('MELD', { meldCodes: meldedCodes });
+    if (!r) return;
     closeMeldModal();
-    notify(isFirstMeld ? '🎉 เกิดสำเร็จ! ต่อไปสามารถฝากไพ่ได้!' : '🃏 เกิดสำเร็จ!');
+    pendingPickedCodes = [];
+    notify(r.is_first_meld ? '🎉 เกิดสำเร็จ! ต่อไปสามารถฝากไพ่ได้!' : '🃏 เกิดสำเร็จ!');
     renderYourHand();
     renderPlayerMeldRow();
     renderScoreboard(currentGame);
@@ -1122,25 +1075,15 @@ function renderLayoffOptions() {
 
 async function selectLayoff(lt) {
   try {
-    var handCodes = currentGame.hands[myPlayerId] || [];
-    var newHandCodes = handCodes.filter(function(c){ return c !== lt.layoffCard; });
-    var targetMeld = currentGame.melds[lt.targetPid] || [];
-    var meldIdx = -1;
-    for (var mi = 0; mi < targetMeld.length; mi++) {
-      if (JSON.stringify(targetMeld[mi]) === JSON.stringify(lt.targetMeld)) { meldIdx = mi; break; }
-    }
-    var newTargetMeld = targetMeld.slice();
-    if (meldIdx >= 0) newTargetMeld[meldIdx] = targetMeld[meldIdx].concat([lt.layoffCard]);
-    var newMelds = Object.assign({}, currentGame.melds || {});
-    newMelds[lt.targetPid] = newTargetMeld;
-    setGame({
-      hands: Object.assign({}, currentGame.hands, { [myPlayerId]: newHandCodes }),
-      melds: newMelds
+    var r = await rpcPlayTurn('LAYOFF', {
+      cardCode:    lt.layoffCard,
+      targetPid:   lt.targetPid,
+      targetMeldIdx: lt.meldIndex
     });
-    await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
+    if (!r) return;
     closeLayoffModal();
     var card = codeToCard(lt.layoffCard);
-    notify('💚 ฝาก ' + (card ? card.rank + card.suit : lt.layoffCard) + ' สำเร็จ! +' + cardPoints(card) + ' แต้ม');
+    notify('💚 ฝาก ' + (card ? card.rank + card.suit : lt.layoffCard) + ' สำเร็จ!');
     renderYourHand();
     renderPlayerMeldRow();
     updateLayoffTargets();
@@ -1430,7 +1373,8 @@ async function playAgain() {
       hasFirstMeld: {},
       lastDiscard: null,
       deckEmpty: false,
-      pickedFromDiscard: {}
+      pickedFromDiscard: {},
+      version: 1
     };
     for (var mi = 0; mi < pids.length; mi++) { gameData.melds[pids[mi]] = []; gameData.scores[pids[mi]] = 0; gameData.hasFirstMeld[pids[mi]] = false; }
     await db.from('rooms').update({ status: 'playing', game: gameData }).eq('id', roomCode);
@@ -1497,7 +1441,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v21 Loaded!');
+  console.log('[DummyRummy] v22 Loaded!');
   // Cleanup: delete rooms still in lobby (never started) — skip 'playing' rooms
   if (db) {
     (async function() {
