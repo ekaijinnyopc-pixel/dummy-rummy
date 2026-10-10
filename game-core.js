@@ -1,6 +1,7 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v19
-// Add: debug logs inside botPlay to find why advanceTurn not called
+// 🃏 DUMMY RUMMY — game-core.js v20
+// Fix: replace .catch() on Supabase builder with try-catch around await saveGame()
+// Supabase JS v1 builder doesn't have .catch() method - it returns the builder itself
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -782,6 +783,9 @@ async function botPlay(botId) {
     var hand = codesToCards(handCodes);
     var pickedThisTurn = false;
 
+    // Helper to update DB without breaking on errors
+    function saveGame() { return db.from('rooms').update({ game: currentGame }).eq('id', roomCode); }
+
     // --- DRAW: try pick from discard first ---
     if (currentGame.discardPile && currentGame.discardPile.length > 0) {
       var discard = currentGame.discardPile;
@@ -805,7 +809,7 @@ async function botPlay(botId) {
           currentGame.turnStartTime = Date.now();
           currentGame.pickedFromDiscard = newPicked;
           currentGame.lastDiscard = null;
-          await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
+          try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
           hand = codesToCards(newHandCodes);
           handCodes = newHandCodes;
           pickedThisTurn = true;
@@ -828,7 +832,7 @@ async function botPlay(botId) {
               delete np2[botId];
               currentGame.pickedFromDiscard = np2;
               currentGame.hands[botId] = nbh.map(function(c){ return c.code; });
-              await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
+              try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
               hand = nbh; handCodes = nbh.map(function(c){ return c.code; });
             }
           }
@@ -847,12 +851,12 @@ async function botPlay(botId) {
       currentGame.hands[botId] = handCodes;
       currentGame.phase = 'action';
       currentGame.turnStartTime = Date.now();
-      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
+      try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
       await delay(300);
     } else if (!pickedThisTurn) {
       currentGame.phase = 'action';
       currentGame.deckEmpty = true;
-      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
+      try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
     }
 
     // --- ACTION: meld (first meld if not yet) ---
@@ -869,7 +873,7 @@ async function botPlay(botId) {
         if (!currentGame.hasFirstMeld) currentGame.hasFirstMeld = {};
         currentGame.hasFirstMeld[botId] = true;
         currentGame.hands[botId] = nh.map(function(c){ return c.code; });
-        await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
+        try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
         hand = nh; handCodes = nh.map(function(c){ return c.code; });
         await delay(300);
       }
@@ -888,7 +892,7 @@ async function botPlay(botId) {
         if (mi2 >= 0) tMeld[mi2] = tMeld[mi2].concat([lo.layoffCard]);
         currentGame.melds[lo.targetPid] = tMeld;
         currentGame.hands[botId] = nloh.map(function(c){ return c.code; });
-        await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
+        try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
         hand = nloh; handCodes = nloh.map(function(c){ return c.code; });
         await delay(300);
       }
@@ -910,7 +914,7 @@ async function botPlay(botId) {
         currentGame.discardPile = (currentGame.discardPile||[]).concat([dCard.code]);
         currentGame.pickedFromDiscard = np3;
         currentGame.lastDiscard = nLD;
-        await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
+        try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
         botRunning[botId] = false;
         await handleKnockout(botId);
         return;
@@ -921,7 +925,7 @@ async function botPlay(botId) {
       currentGame.turnStartTime = Date.now();
       currentGame.pickedFromDiscard = np3;
       currentGame.lastDiscard = nLD;
-      await db.from('rooms').update({ game: currentGame }).eq('id', roomCode).catch(function(){});
+      try { await saveGame(); } catch(e) { console.warn('[Bot] save err:', e.message); }
     }
 
     botRunning[botId] = false;
@@ -1491,7 +1495,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v19 Loaded!');
+  console.log('[DummyRummy] v20 Loaded!');
   // Cleanup: delete rooms still in lobby (never started) — skip 'playing' rooms
   if (db) {
     (async function() {
