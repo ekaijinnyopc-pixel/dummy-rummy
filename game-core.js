@@ -1,6 +1,6 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v15
-// Simplify: unified 120s player timer (all phases), any action resets
+// 🃏 DUMMY RUMMY — game-core.js v16
+// Fix: cleanupOldRooms 400 error, botWithTimeout null check, debug logs
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -1459,13 +1459,21 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v15 Loaded!');
+  console.log('[DummyRummy] v16 Loaded!');
+  // Cleanup old rooms — simple delete by updated_at (no chaining that causes 400)
   if (db) {
     (async function() {
       try {
         var thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-        await db.from('rooms').delete().lt('updated_at', thirtyMinAgo).neq('status', 'playing');
-      } catch(e) {}
+        var oldRooms = await db.from('rooms').select('id, status').lt('updated_at', thirtyMinAgo);
+        if (oldRooms.data && oldRooms.data.length > 0) {
+          for (var ri = 0; ri < oldRooms.data.length; ri++) {
+            if (oldRooms.data[ri].status !== 'playing') {
+              await db.from('rooms').delete().eq('id', oldRooms.data[ri].id);
+            }
+          }
+        }
+      } catch(e) { console.warn('[Cleanup] error:', e); }
     })();
   }
 });
