@@ -1,6 +1,6 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v18
-// Add: comprehensive debug logs for bot/realtime/polling flow
+// 🃏 DUMMY RUMMY — game-core.js v19
+// Add: debug logs inside botPlay to find why advanceTurn not called
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -764,15 +764,19 @@ function botWithTimeout(botId) {
 
 async function botPlay(botId) {
   try {
-    if (!currentGame || currentGame.status !== 'playing') { botRunning[botId] = false; return; }
-    if (currentGame.turnPlayerId !== botId) { botRunning[botId] = false; return; }
+    console.log('[Bot] checking status:', currentGame ? currentGame.status : 'null', 'turn:', currentGame ? currentGame.turnPlayerId : 'null');
+    if (!currentGame || currentGame.status !== 'playing') { console.log('[Bot] RETURN: no game or not playing'); botRunning[botId] = false; return; }
+    if (currentGame.turnPlayerId !== botId) { console.log('[Bot] RETURN: not my turn'); botRunning[botId] = false; return; }
 
     await delay(600);
 
     // Re-read current game state
     var _data = await db.from('rooms').select('game').eq('id', roomCode).single();
-    if (_data.data && _data.data.game) currentGame = _data.data.game;
-    if (!currentGame || currentGame.turnPlayerId !== botId) { botRunning[botId] = false; return; }
+    if (_data.data && _data.data.game) {
+      currentGame = _data.data.game;
+      console.log('[Bot] re-read turn:', currentGame.turnPlayerId, 'phase:', currentGame.phase);
+    }
+    if (!currentGame || currentGame.turnPlayerId !== botId) { console.log('[Bot] RETURN: after re-read not my turn'); botRunning[botId] = false; return; }
 
     var handCodes = currentGame.hands[botId] || [];
     var hand = codesToCards(handCodes);
@@ -921,8 +925,10 @@ async function botPlay(botId) {
     }
 
     botRunning[botId] = false;
+    console.log('[Bot] calling advanceTurn');
     await advanceTurn();
   } catch(e) {
+    console.error('[Bot] EXCEPTION:', e.message, e.stack ? e.stack.split('\n')[1] : '');
     botRunning[botId] = false;
   }
 }
@@ -1485,7 +1491,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v18 Loaded!');
+  console.log('[DummyRummy] v19 Loaded!');
   // Cleanup: delete rooms still in lobby (never started) — skip 'playing' rooms
   if (db) {
     (async function() {
