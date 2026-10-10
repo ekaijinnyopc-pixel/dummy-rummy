@@ -1,8 +1,8 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v24
-// Pause bots → test human-only game first
-// - Hand sizes: 2 players=11 cards, 3 players=9, 4 players=7
-// - No bots needed for testing — just play in multiple tabs/browsers
+// 🃏 DUMMY RUMMY — game-core.js v25
+// - Dropdown: select total players (2/3/4), bots auto-filled
+// - Game screen: empty slots show "ไม่มี" instead of "รอผู้เล่น"
+// - Lobby: empty slots show "ไม่มี" instead of "รอผู้เล่น..."
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -456,7 +456,8 @@ async function createRoom() {
     var name = document.getElementById('create-name').value.trim();
     if (!name) { notify('กรุณาใส่ชื่อ'); return; }
     if (!db) { notify('กรุณารอสักครู่... กดอีกครั้ง'); return; }
-    var botCount = parseInt(document.getElementById('bot-count').value) || 0;
+    var totalPlayers = parseInt(document.getElementById('player-count').value) || 4;
+    var botCount = totalPlayers - 1;  // you + (total-1) bots
     roomCode = genRoomCode();
     myName = name;
     myPlayerId = 'p_' + Math.random().toString(36).substr(2, 9);
@@ -1110,7 +1111,7 @@ async function renderLobby(players) {
         '<div class="pname">' + p.name + '</div>' +
         '<div class="ptype">' + (isYou ? '(คุณ)' : p.isBot ? 'AI' : 'ผู้เล่น') + '</div></div>';
     }
-    for (var ei = arr.length; ei < 4; ei++) html += '<div class="player-slot"><div class="pemoji">❓</div><div class="pname">รอผู้เล่น...</div><div class="ptype">เหลือ ' + (4-ei) + ' คน</div></div>';
+    for (var ei = arr.length; ei < 4; ei++) html += '<div class="player-slot"><div class="pemoji">❌</div><div class="pname">ไม่มี</div><div class="ptype">ไม่มีผู้เล่น</div></div>';
     list.innerHTML = html;
     var humanCount = arr.filter(function(p){ return !p.isBot; }).length;
     if (btnStart) btnStart.style.display = humanCount >= 1 ? 'block' : 'none';
@@ -1165,7 +1166,7 @@ async function renderOpponents(game) {
 }
 
 function opponentCardHtml(pid, game, players) {
-  if (!pid) return '<div class="opponent-card" style="opacity:0.3"><div class="oheader"><span class="oemoji">❓</span><span class="oname">---</span></div><div class="ocard-mini"><span style="color:#555;font-size:0.75rem">รอผู้เล่น</span></div></div>';
+  if (!pid) return '<div class="opponent-card" style="opacity:0.2"><div class="oheader"><span class="oemoji">❌</span><span class="oname">ไม่มี</span></div><div class="ocard-mini"><span style="color:#555;font-size:0.75rem">ไม่มีผู้เล่น</span></div></div>';
   var handSize = game.hands && game.hands[pid] ? game.hands[pid].length : 0;
   var isActive = game.turnPlayerId === pid;
   var p = players[pid] || {};
@@ -1445,7 +1446,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v24 Loaded!');
+  console.log('[DummyRummy] v25 Loaded!');
   // Cleanup: delete rooms still in lobby (never started) — skip 'playing' rooms
   if (db) {
     (async function() {
