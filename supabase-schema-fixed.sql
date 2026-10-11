@@ -111,6 +111,8 @@ BEGIN
     v_game := jsonb_set(v_game, '{hands}', v_hands);
     v_game := jsonb_set(v_game, '{deck}', to_jsonb(v_deck));
     v_game := jsonb_set(v_game, '{phase}', '"action"');
+    -- Reset hasDiscardedThisTurn when starting a fresh turn (draw)
+    v_game := jsonb_set(v_game, ARRAY['hasDiscardedThisTurn', p_player_id], 'false');
     v_game := jsonb_set(v_game, '{version}', to_jsonb(v_new_version));
     UPDATE rooms SET game = v_game, version = v_new_version WHERE id = p_game_id;
     RETURN jsonb_build_object('ok', true, 'game', v_game);
@@ -144,6 +146,8 @@ BEGIN
     v_hands := jsonb_set(v_hands, ARRAY[p_player_id], to_jsonb(v_new_hand));
     v_game := jsonb_set(v_game, '{hands}', v_hands);
     v_game := jsonb_set(v_game, '{discardPile}', to_jsonb(v_discard));
+    -- บันทึกว่าผู้เล่นทิ้งไพ่แล้วในตานี้
+    v_game := jsonb_set(v_game, ARRAY['hasDiscardedThisTurn', p_player_id], 'true');
     v_players := ARRAY(SELECT jsonb_array_elements_text(v_game->'playerOrder'));
     v_idx := 0;
     FOR i IN 1..array_length(v_players,1) LOOP IF v_players[i] = v_current_pid THEN v_idx := i; EXIT; END IF; END LOOP;
@@ -231,6 +235,13 @@ BEGIN
 
   -- END_TURN
   ELSIF p_action = 'END_TURN' THEN
+    -- ตรวจสอบว่าทิ้งไพ่แล้วในตานี้ (บังคับตามกติกาดัมมี่)
+    v_has_discarded := COALESCE((v_game->'hasDiscardedThisTurn')->>p_player_id, 'false')::BOOLEAN;
+    IF NOT v_has_discarded THEN
+      RETURN jsonb_build_object('ok', false, 'error', 'MUST_DISCARD', 'details', 'ต้องทิ้งไพ่ 1 ใบก่อนจบตา');
+    END IF;
+    -- ล้าง hasDiscardedThisTurn ของทุกคนก่อนเริ่มตาใหม่
+    v_game := jsonb_set(v_game, '{hasDiscardedThisTurn}', '{}'::JSONB);
     v_players := ARRAY(SELECT jsonb_array_elements_text(v_game->'playerOrder'));
     v_idx := 0;
     FOR i IN 1..array_length(v_players,1) LOOP IF v_players[i] = v_current_pid THEN v_idx := i; EXIT; END IF; END LOOP;

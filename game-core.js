@@ -306,6 +306,8 @@ async function rpcPlayTurn(action, opts) {
       console.warn('[RPC]', action, 'failed:', data ? data.error : 'unknown');
       if (data && data.error === 'NOT_YOUR_TURN') {
         notify('ไม่ใช่ตาของคุณ!');
+      } else if (data && data.error === 'MUST_DISCARD') {
+        notify('❌ ต้องทิ้งไพ่ 1 ใบก่อนจบตา!');
       }
       return null;
     }
@@ -323,6 +325,7 @@ async function rpcPlayTurn(action, opts) {
 }
 var selectedCards = [];
 var myTurn = false;
+var hasDiscardedThisTurn = false;  // ต้องทิ้งไพ่ 1 ใบก่อนจบตา (บังคับจาก server ด้วย)
 var pendingPickedCodes = [];   // codes picked from discard this turn (must meld)
 var layoffTargets = [];        // valid layoff options found for current hand
 var pollInterval = null;
@@ -658,6 +661,7 @@ async function discardSelected() {
 
     var r = await rpcPlayTurn('DISCARD', { cardCode: cardCode });
     if (!r) return;
+    hasDiscardedThisTurn = true; // บันทึกว่าทิ้งแล้ว ถึงจะจบตาได้
 
     // Check for speto notification (handled in RPC, but notify player)
     if (isSpeto(card)) notify('⚠️ ทิ้งสเปโต! -100 แต้ม');
@@ -710,6 +714,7 @@ async function endTurn() {
     if (!currentGame || !myTurn) return;
     if (currentGame.phase === 'draw') { notify('ต้องจั่วหรือหยิบจากกองทิ้งก่อน!'); return; }
     if (pendingPickedCodes.length > 0) { notify('❌ ต้องเกิดใบที่หยิบจากกองทิ้งก่อน!'); return; }
+    if (!hasDiscardedThisTurn) { notify('❌ ต้องทิ้งไพ่ 1 ใบก่อนจบตา!'); return; }
     var r = await rpcPlayTurn('END_TURN');
     if (!r) return;
     resetPlayerTimer();
@@ -1149,6 +1154,7 @@ async function renderGame(game) {
     window._currentGame = game;
     var turnPlayerId = game.turnPlayerId;
     myTurn = turnPlayerId === myPlayerId;
+    if (myTurn) hasDiscardedThisTurn = false; // เริ่มตาใหม่ ต้องทิ้งใหม่
     var ti = document.getElementById('turn-indicator');
     if (ti) ti.textContent = myTurn ? '🎯 ตาของคุณ!' : '⏳ รอตาคนอื่น...';
     // Start/stop player turn timer
@@ -1330,13 +1336,14 @@ function updateActionBtns() {
       if (btnDraw) btnDraw.disabled = phase !== 'draw' || isLastCard;
       if (btnMeld) btnMeld.disabled = false;
       if (btnDiscard) btnDiscard.disabled = !(selectedCards.length === 1 && !picked && !isLastCard);
-      if (btnEnd) btnEnd.disabled = !(phase === 'action' && !picked);
+      if (btnEnd) btnEnd.disabled = !(phase === 'action' && !picked && hasDiscardedThisTurn);
       if (btnKnock) btnKnock.style.display = isLastCard && phase === 'action' ? 'inline-block' : 'none';
 
       if (isLastCard) handStatus.textContent = '🔔 ไพ่หมด! กดปุ่ม 🔔 น็อค!';
       else if (picked) handStatus.textContent = '⚠️ ต้องเกิดใบที่หยิบจากกองทิ้งก่อน!';
       else if (phase === 'draw') handStatus.textContent = '📦 จั่วหรือหยิบจากกองทิ้ง';
-      else handStatus.textContent = '🃏 เลือกไพ่ 1 ใบที่จะทิ้ง แล้วกดปุ่ม 🗑️ ทิ้ง';
+      else if (!hasDiscardedThisTurn) handStatus.textContent = '⚠️ ต้องเลือกไพ่ 1 ใบที่จะทิ้ง แล้วกดปุ่ม 🗑️ ทิ้งก่อนจบตา!';
+      else handStatus.textContent = '🃏 ทิ้งแล้ว ✓ กดจบตาได้เลย';
     } else {
       [btnDraw, btnMeld, btnDiscard, btnEnd].forEach(function(b){ if(b) b.disabled = true; });
       if (btnKnock) btnKnock.style.display = 'none';
