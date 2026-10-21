@@ -76,6 +76,7 @@ DECLARE
   v_result        JSONB;
   v_meld_arr      TEXT[];
   v_is_first_meld BOOLEAN;
+  v_picked        JSONB;
 BEGIN
   SELECT game, version INTO v_game, v_new_version FROM rooms WHERE id = p_game_id FOR UPDATE;
   v_new_version := COALESCE(v_new_version, 0);
@@ -119,19 +120,30 @@ BEGIN
     v_game := jsonb_set(v_game, '{phase}', '"action"');
     -- Reset hasDiscardedThisTurn when starting a fresh turn (draw)
     v_game := jsonb_set(v_game, ARRAY['hasDiscardedThisTurn', p_player_id], 'false');
+    -- FIX 4 (ต่อ): จั่วใหม่ = ไม่มีใบที่หยิบค้างไว้
+    v_game := jsonb_set(v_game, ARRAY['pickedFromDiscard', p_player_id], '[]'::JSONB);
     v_game := jsonb_set(v_game, '{version}', to_jsonb(v_new_version));
     UPDATE rooms SET game = v_game, version = v_new_version WHERE id = p_game_id;
     RETURN jsonb_build_object('ok', true, 'game', v_game);
 
   -- PICK_DISCARD
+  -- FIX 3: เดิม v_discard[1:p_discard_index] ตัดทิ้งไพ่ที่หยิบ + ใบที่อยู่บนทิ้งหาย
+  --        แล้วเอา "ไพ่ที่เหลือ" ไปใส่มือแทน → ไพ่หายจากเกม, เกิดไม่ได้
+  --        แก้: หยิบไพ่ที่ index นั้น + ทุกใบที่อยู่บน → เข้ามือ
   ELSIF p_action = 'PICK_DISCARD' THEN
     IF v_current_pid != p_player_id THEN RETURN jsonb_build_object('ok', false, 'error', 'NOT_YOUR_TURN'); END IF;
     IF p_discard_index < 0 OR p_discard_index >= array_length(v_discard, 1) THEN RETURN jsonb_build_object('ok', false, 'error', 'INVALID_INDEX'); END IF;
+    -- ไพ่ที่หยิบ = ตั้งแต่ index นี้ขึ้นไป (ใบที่อยู่บนทั้งหมด)
+    v_pick := to_jsonb(v_discard[p_discard_index + 1:array_length(v_discard,1)]);
+    -- ไพ่ที่เหลือในกองทิ้ง = ก่อนหน้า index นี้
     v_discard := v_discard[1:p_discard_index];
     v_card_arr := v_hands->p_player_id;
     IF v_card_arr IS NULL THEN v_card_arr := '[]'::JSONB; END IF;
-    v_new := ARRAY(SELECT jsonb_array_elements_text(v_card_arr)) || v_discard;
+    v_new := ARRAY(SELECT jsonb_array_elements_text(v_card_arr))
+             || ARRAY(SELECT jsonb_array_elements_text(v_pick));
     v_hands := jsonb_set(v_hands, ARRAY[p_player_id], to_jsonb(v_new));
+    -- FIX 4: บันทึกว่าหยิบอะไร → server บังคับให้เกิดใบที่หยิบก่อนทิ้งได้
+    v_game := jsonb_set(v_game, ARRAY['pickedFromDiscard', p_player_id], v_pick);
     v_game := jsonb_set(v_game, '{hands}', v_hands);
     v_game := jsonb_set(v_game, '{discardPile}', to_jsonb(v_discard));
     v_game := jsonb_set(v_game, '{phase}', '"action"');
@@ -143,6 +155,11 @@ BEGIN
   ELSIF p_action = 'DISCARD' THEN
     IF v_current_pid != p_player_id THEN RETURN jsonb_build_object('ok', false, 'error', 'NOT_YOUR_TURN'); END IF;
     IF p_card_code IS NULL THEN RETURN jsonb_build_object('ok', false, 'error', 'NO_CARD'); END IF;
+    -- FIX 5: ถ้ายังไม่เกิดใบที่หยิบ → ห้ามทิ้ง (บังคับกติกาฝั่ง server)
+    v_picked := COALESCE(v_game->'pickedFromDiscard'->p_player_id, '[]'::JSONB);
+    IF jsonb_array_length(v_picked) > 0 THEN
+      RETURN jsonb_build_object('ok', false, 'error', 'MUST_MELD_PICKED', 'details', 'ต้องเกิดใบที่หยิบจากกองทิ้งก่อน');
+    END IF;
     v_card_arr := v_hands->p_player_id;
     IF v_card_arr IS NULL THEN RETURN jsonb_build_object('ok', false, 'error', 'HAND_NOT_FOUND'); END IF;
     v_old := ARRAY(SELECT jsonb_array_elements_text(v_card_arr));
@@ -182,6 +199,8 @@ BEGIN
     v_hands := jsonb_set(v_hands, ARRAY[p_player_id], to_jsonb(v_new_hand));
     v_is_first_meld := NOT COALESCE((v_has_fm->p_player_id)::BOOLEAN, false);
     v_has_fm := v_has_fm || jsonb_build_object(p_player_id, true);
+    -- FIX 4 (ต่อ): เกิดแล้ว → ล้างรายการใบที่หยิบ (ทั้งที่เกิดไปแล้วและที่เหลือในมือ)
+    v_game := jsonb_set(v_game, ARRAY['pickedFromDiscard', p_player_id], '[]'::JSONB);
     v_game := jsonb_set(v_game, '{hands}', v_hands);
     v_game := jsonb_set(v_game, '{melds}', v_melds);
     v_game := jsonb_set(v_game, '{hasFirstMeld}', v_has_fm);
