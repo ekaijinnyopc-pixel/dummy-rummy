@@ -356,7 +356,6 @@ BEGIN
           to_jsonb(COALESCE((v_scores->v_tpid)::INT, 0) + COALESCE((v_round_scores->v_tpid)::INT, 0)));
       END;
     END LOOP;
-    -- ผู้ชนะ: ถ้ามีคนสะสม >= 500 → คนที่สะสมน้อยที่สุดชนะ
     -- ผู้ชนะ: ถ้ามีใครสะสม >= 500 → คนที่สะสมน้อยที่สุดชนะ (เหมือน handleKnockout() ใน client)
     v_win_pid := NULL;
     v_min_total := NULL;
