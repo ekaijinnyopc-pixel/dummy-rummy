@@ -70,6 +70,7 @@ DECLARE
   v_score_diff    INTEGER;
   v_result        JSONB;
   v_meld_arr      TEXT[];
+  v_is_first_meld BOOLEAN;
 BEGIN
   SELECT game, version INTO v_game, v_new_version FROM rooms WHERE id = p_game_id FOR UPDATE;
   v_new_version := COALESCE(v_new_version, 0);
@@ -174,13 +175,14 @@ BEGIN
     v_melds := COALESCE(v_melds, '{}'::JSONB);
     v_melds := jsonb_set(v_melds, ARRAY[p_player_id], COALESCE(v_melds->p_player_id, '[]'::JSONB) || jsonb_build_array(to_jsonb(v_meld_arr)));
     v_hands := jsonb_set(v_hands, ARRAY[p_player_id], to_jsonb(v_new_hand));
+    v_is_first_meld := NOT COALESCE((v_has_fm->p_player_id)::BOOLEAN, false);
     v_has_fm := v_has_fm || jsonb_build_object(p_player_id, true);
     v_game := jsonb_set(v_game, '{hands}', v_hands);
     v_game := jsonb_set(v_game, '{melds}', v_melds);
     v_game := jsonb_set(v_game, '{hasFirstMeld}', v_has_fm);
     v_game := jsonb_set(v_game, '{version}', to_jsonb(v_new_version));
     UPDATE rooms SET game = v_game, version = v_new_version WHERE id = p_game_id;
-    RETURN jsonb_build_object('ok', true, 'game', v_game, 'is_first_meld', (v_has_fm->p_player_id) IS NULL);
+    RETURN jsonb_build_object('ok', true, 'game', v_game, 'is_first_meld', v_is_first_meld);
 
   -- LAYOFF
   ELSIF p_action = 'LAYOFF' THEN

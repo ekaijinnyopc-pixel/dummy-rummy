@@ -210,7 +210,7 @@ function detectMeldType(codes) {
 }
 
 // Find all valid layoff targets for player's hand against ALL melds on table
-// Returns array of { layoffCard, targetMeld, targetPid }
+// Returns array of { layoffCard, meldIndex, targetPid, meldType }
 function findAllLayoffs(handCodes, game) {
   var results = [];
   var handCards = codesToCards(handCodes);
@@ -226,14 +226,14 @@ function findAllLayoffs(handCodes, game) {
         var hCard = handCards[hi];
         if (isSpeto(hCard)) continue; // speto can't be laid off
 
-        if (meldType === 'set') {
+        if (meldType === 'ตอง') {
           // Same rank as existing set
           if (hCard.rank === meldCards[0].rank && hCard.suit !== meldCards[0].suit) {
             // Check not already in meld
             var alreadyIn = meldCodes.some(function(c){ return codeToCard(c).suit === hCard.suit; });
-            if (!alreadyIn) results.push({ layoffCard: hCard.code, targetMeld: meldCodes, targetPid: pid, meldType: meldType });
+            if (!alreadyIn) results.push({ layoffCard: hCard.code, meldIndex: mi, targetPid: pid, meldType: meldType });
           }
-        } else if (meldType === 'run') {
+        } else if (meldType === 'เรียง') {
           // Check if hCard can extend the run (low or high)
           var suit = meldCards[0].suit;
           if (hCard.suit !== suit) continue;
@@ -247,7 +247,7 @@ function findAllLayoffs(handCodes, game) {
             // For A-high runs, make sure it's valid
             if (hR === 1 && maxR === 14) continue; // A already high, can't go lower
             if (hR === 14 && minR === 1) continue; // A already low, can't go higher
-            results.push({ layoffCard: hCard.code, targetMeld: meldCodes, targetPid: pid, meldType: meldType });
+            results.push({ layoffCard: hCard.code, meldIndex: mi, targetPid: pid, meldType: meldType });
           }
         }
       }
@@ -277,11 +277,11 @@ async function rpcPlayTurn(action, opts) {
     p_game_id:          roomCode,
     p_player_id:        playerId,
     p_action:           action,
-    p_card_code:        opts.cardCode     || null,
-    p_discard_index:   opts.discardIndex || null,
-    p_meld_codes:       opts.meldCodes    || null,
-    p_target_pid:       opts.targetPid    || null,
-    p_target_meld_idx: opts.targetMeldIdx|| null,
+    p_card_code:        opts.cardCode     != null ? opts.cardCode     : null,
+    p_discard_index:   opts.discardIndex != null ? opts.discardIndex : null,
+    p_meld_codes:       opts.meldCodes    != null ? opts.meldCodes    : null,
+    p_target_pid:       opts.targetPid    != null ? opts.targetPid    : null,
+    p_target_meld_idx:  opts.targetMeldIdx != null ? opts.targetMeldIdx : null,
     p_expected_version: version
   };
   try {
@@ -632,6 +632,10 @@ async function pickFromDiscard(idx) {
 
     var r = await rpcPlayTurn('PICK_DISCARD', { discardIndex: idx });
     if (!r) return;
+
+    // FIX: force-update currentGame from RPC result BEFORE rendering
+    // to guarantee renderMeldOptions sees the NEW hand (with picked card)
+    if (r.game) { currentGame = r.game; }
 
     pendingPickedCodes = taken;
     renderYourHand();
@@ -1010,8 +1014,12 @@ async function confirmMeld() {
     var meld = window._selectedMeld;
     if (!meld) return;
     var meldedCodes = meld.cards.map(function(c){ return c.code; });
+    // FIX: clear selectedCards BEFORE RPC so stale refs don't confuse discard btn
+    selectedCards = [];
     var r = await rpcPlayTurn('MELD', { meldCodes: meldedCodes });
-    if (!r) return;
+    if (!r) { selectedCards = []; return; } // revert on failure
+    // FIX: transition phase to 'action' so discard btn enables immediately
+    if (currentGame) { currentGame.phase = 'action'; }
     closeMeldModal();
     pendingPickedCodes = [];
     notify(r.is_first_meld ? '🎉 เกิดสำเร็จ! ต่อไปสามารถฝากไพ่ได้!' : '🃏 เกิดสำเร็จ!');
@@ -1335,7 +1343,11 @@ function updateActionBtns() {
       var phase = currentGame.phase || 'draw';
       if (btnDraw) btnDraw.disabled = phase !== 'draw' || isLastCard;
       if (btnMeld) btnMeld.disabled = false;
-      if (btnDiscard) btnDiscard.disabled = !(selectedCards.length === 1 && !picked && !isLastCard);
+      // FIX: also verify the selected card is still actually in hand (not stale after a meld)
+      var selCodes = selectedCards.map(function(c){ return c.code || c; });
+      var myHandCodes = currentGame.hands[myPlayerId] || [];
+      var selStillInHand = selectedCards.length === 1 && selCodes.length > 0 && myHandCodes.indexOf(selCodes[0]) >= 0;
+      if (btnDiscard) btnDiscard.disabled = !(selStillInHand && !picked && !isLastCard);
       if (btnEnd) btnEnd.disabled = !(phase === 'action' && !picked && hasDiscardedThisTurn);
       if (btnKnock) btnKnock.style.display = isLastCard && phase === 'action' ? 'inline-block' : 'none';
 
