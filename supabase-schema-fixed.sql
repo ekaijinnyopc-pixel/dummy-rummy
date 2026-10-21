@@ -2,9 +2,12 @@
 -- Dummy Rummy — Supabase Schema Setup
 -- วิธีใช้: ไป Supabase → SQL Editor → วางทั้งหมด → Run
 --
--- ⚠️ FIX 2026-10-19 — "เก็บเกิดไม่ได้" (ฝากไพ่/LAYOFF ไม่ได้)
+-- ⚠️ FIX 2026-10-19 — "เก็บเกิดไม่ได้"
 --   FIX 1 (MELD)  : is_first_meld คำนวณหลังอัปเดต v_has_fm → false ตลอด
 --   FIX 2 (LAYOFF): ตรวจ meld index ของเป้าหมายให้อยู่ในช่วงจริง
+--   FIX 3 (PICK)  : ไพ่ที่หยิบจากกองทิ้งเคยหายไปจากเกม (ต้นเหตุหลัก!)
+--   FIX 4 (PICK)  : บันทึก pickedFromDiscard ให้ server รู้ว่าใครหยิบอะไร
+--   FIX 5 (DISCARD): บังคับให้เกิดใบที่หยิบก่อนทิ้ง (MUST_MELD_PICKED)
 --   ฝั่ง client (game-core.js) แก้แล้ว: findAllLayoffs + rpcPlayTurn
 -- ============================================================
 
