@@ -451,7 +451,7 @@ async function setupRealtime(rid) {
             console.log('[RT] Not bot turn, myTurn=', currentGame.turnPlayerId);
           }
         } else if (room.status === 'ended') {
-          showEndGame({ winner: room.winner, totalScores: room.totalScores, players: room.players });
+          showEndGame(resolveEndGame(room));
         }
       } catch(e) { console.error('[RT] callback error:', e); }
     });
@@ -672,7 +672,13 @@ async function discardSelected() {
 
     // Check for knockout
     if (r.game && r.game.status === 'ended') {
-      showEndGame({ winner: myPlayerId, totalScores: r.game.scores, roundScores: r.round_scores, players: {} });
+      var _pk = await db.from('rooms').select('players').eq('id', roomCode).single();
+      var _pl = (_pk && _pk.data && _pk.data.players) || {};
+      showEndGame(resolveEndGame({ players: _pl, game: r.game }, {
+        winner: (r.winner !== undefined && r.winner !== null) ? r.winner : (r.game.winner || myPlayerId),
+        totalScores: r.total_scores || r.game.totalScores || r.game.scores,
+        roundScores: r.round_scores || r.game.roundScores || {}
+      }));
       return;
     }
 
@@ -707,9 +713,10 @@ async function doKnock() {
     // Fetch players for showEndGame
     var _p = await db.from('rooms').select('players').eq('id', roomCode).single();
     var players = (_p && _p.data && _p.data.players) || {};
-    var roundScores = r.round_scores || {};
-    var totalScores = (r.game && r.game.scores) || currentGame.scores || {};
-    showEndGame({ winner: myPlayerId, totalScores: totalScores, roundScores: roundScores, players: players });
+    var roundScores = r.round_scores || (r.game && r.game.roundScores) || {};
+    var totalScores = r.total_scores || (r.game && (r.game.totalScores || r.game.scores)) || currentGame.scores || {};
+    var winner = (r.winner !== undefined && r.winner !== null) ? r.winner : (r.game && r.game.winner) || myPlayerId;
+    showEndGame({ winner: winner, totalScores: totalScores, roundScores: roundScores, players: players });
   } catch(e) { console.error('doKnock error:', e); }
 }
 
@@ -1365,6 +1372,21 @@ function updateActionBtns() {
 }
 
 // --- END GAME ---
+// FIX S3: ผู้ชนะ/คะแนนอาจอยู่ที่ room.winner, room.totalScores หรือใน game JSONB
+// (server เขียนไว้ทั้งที่) → อ่านให้ครบทุกทาง ไม่ให้ขึ้น "??" หรือตารางว่าง
+function resolveEndGame(room, extra) {
+  var r = room || {};
+  var g = r.game || {};
+  var e = extra || {};
+  var players = e.players || r.players || {};
+  var winner = (e.winner !== undefined && e.winner !== null) ? e.winner
+             : (r.winner !== undefined && r.winner !== null) ? r.winner
+             : (g.winner !== undefined ? g.winner : null);
+  var totalScores = e.totalScores || r.totalScores || g.totalScores || g.scores || {};
+  var roundScores = e.roundScores || g.roundScores || {};
+  return { winner: winner, totalScores: totalScores, roundScores: roundScores, players: players };
+}
+
 function showEndGame(data) {
   try {
     confetti();
@@ -1482,7 +1504,7 @@ function startPolling(rid) {
                 }
               }
             } else if (remoteRoom.status === 'ended') {
-              showEndGame({ winner: remoteRoom.winner, totalScores: remoteRoom.totalScores, players: remoteRoom.players });
+              showEndGame(resolveEndGame(remoteRoom));
             }
           }
         }
