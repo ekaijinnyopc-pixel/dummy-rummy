@@ -481,6 +481,67 @@ body {
 .endgame-table .winner-row { background: rgba(255,215,0,0.1); color: var(--gold); font-weight: 700; }
 .endgame-modal .btn { margin: 6px; }
 
+/* ===== END GAME SUMMARY (แบบต้นแบบ: แถวอันดับ + แต้ม + ไพ่ + น็อค) ===== */
+.endgame-modal.eg-new { max-width: 720px; text-align: left; padding: 18px 22px 14px; }
+.endgame-modal.eg-new h2 { text-align: center; margin-bottom: 10px; font-size: 1.3rem; }
+.eg-rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.eg-row {
+  display: grid;
+  grid-template-columns: 6px 34px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 10px;
+  padding: 8px 12px 8px 0;
+  overflow: hidden;
+}
+.eg-rank-bar { width: 6px; height: 100%; min-height: 54px; border-radius: 3px; }
+.eg-row.r1 .eg-rank-bar { background: #4a9eff; }
+.eg-row.r2 .eg-rank-bar { background: var(--gold); }
+.eg-row.r3 .eg-rank-bar { background: #ff5c5c; }
+.eg-row.r4 .eg-rank-bar { background: #45c463; }
+.eg-av { font-size: 1.6rem; text-align: center; }
+.eg-who { min-width: 0; }
+.eg-nm { font-weight: 700; font-size: 0.95rem; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.eg-nm .eg-crown { color: var(--gold); }
+.eg-nm .eg-bot { font-size: 0.8rem; }
+.eg-cards { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
+.eg-card {
+  background: #fff; color: #111; border-radius: 4px;
+  font-size: 0.6rem; line-height: 1.1; font-weight: 700;
+  padding: 2px 4px; min-width: 20px; text-align: center;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.4);
+}
+.eg-card.red { color: #d12b2b; }
+.eg-card.black { color: #111; }
+.eg-card.speto { background: linear-gradient(135deg,#ffe9a8,#f5c518); }
+.eg-pts { display: flex; gap: 12px; align-items: center; font-size: 0.82rem; white-space: nowrap; }
+.eg-pt { text-align: center; }
+.eg-pt .lbl { display: block; font-size: 0.62rem; color: #bcd; letter-spacing: .2px; }
+.eg-pt .val { font-weight: 800; font-size: 0.95rem; }
+.eg-pt .val.pos { color: #6fe38a; }
+.eg-pt .val.neg { color: #ff8a8a; }
+.eg-pt .val.zero { color: #999; }
+.eg-knock { display: inline-block; background: #d12b2b; color: #fff; font-size: 0.6rem; border-radius: 8px; padding: 1px 6px; margin-top: 3px; font-weight: 700; }
+.eg-bottom {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  border-top: 1px solid rgba(255,255,255,0.15); padding-top: 10px; flex-wrap: wrap;
+}
+.eg-newroom { font-size: 0.8rem; color: #cfe; }
+.eg-newroom .eg-btn {
+  display: inline-block; background: #1e5b3a; color: #d9ffe4; border: 1px solid #2f8b57;
+  border-radius: 8px; padding: 6px 12px; cursor: pointer; font-weight: 700; font-size: 0.85rem;
+}
+.eg-newroom .eg-btn:hover { background: #2f8b57; }
+.eg-newroom .eg-code { margin-top: 5px; font-size: 0.75rem; color: #9fc; }
+.eg-piles { display: flex; gap: 16px; align-items: center; }
+.eg-pile-label { font-size: 0.68rem; color: #bcd; margin-bottom: 3px; }
+.eg-pile-cards { display: flex; gap: 3px; min-height: 26px; align-items: center; }
+.eg-pile-cards .eg-card { font-size: 0.58rem; padding: 2px 3px; }
+.eg-empty { font-size: 0.7rem; color: #888; }
+.eg-ok { background: #2f8b57; color: #fff; border: none; border-radius: 10px; padding: 10px 26px; font-size: 0.95rem; font-weight: 700; cursor: pointer; }
+.eg-ok:hover { background: #3aa76b; }
+
 /* Confetti */
 .confetti { position: fixed; inset: 0; pointer-events: none; z-index: 999; }
 .confetti-piece {
@@ -808,12 +869,26 @@ body {
 
 <!-- ===== END GAME MODAL ===== -->
 <div class="modal-overlay" id="endgame-modal">
-  <div class="endgame-modal">
-    <h2>🏆 จบเกม!</h2>
-    <div class="winner-name" id="winner-name">---</div>
-    <table class="endgame-table" id="endgame-table"></table>
-    <button class="btn btn-primary" onclick="playAgain()">🔄 เล่นอีกครั้ง</button>
-    <button class="btn btn-secondary" onclick="goHome()">🏠 กลับหน้าแรก</button>
+  <div class="endgame-modal eg-new">
+    <h2>🏆 สรุปผลรอบ</h2>
+    <div class="eg-rows" id="endgame-rows"></div>
+    <div class="eg-bottom">
+      <div class="eg-newroom">
+        <span class="eg-btn" onclick="playAgain()">🔄 ห้องมือใหม่</span>
+        <div class="eg-code">ห้อง <b id="eg-roomcode">-------</b></div>
+      </div>
+      <div class="eg-piles">
+        <div>
+          <div class="eg-pile-label">📦 ไพ่กองจั่ว</div>
+          <div class="eg-pile-cards" id="eg-deck"></div>
+        </div>
+        <div>
+          <div class="eg-pile-label">🗑️ ไพ่กองทิ้ง</div>
+          <div class="eg-pile-cards" id="eg-discard"></div>
+        </div>
+      </div>
+      <button class="eg-ok" onclick="closeEndGame()">ตกลง</button>
+    </div>
   </div>
 </div>
 
@@ -824,6 +899,6 @@ body {
 <div class="confetti" id="confetti"></div>
 
 <script src="supabase.js?v=1"></script>
-<script src="game-core.js?v=34"></script>
+<script src="game-core.js?v=35"></script>
 </body>
 </html>

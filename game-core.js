@@ -755,7 +755,7 @@ async function doKnock() {
       await saveEndStateClientSide(winner, totalScores, roundScores);
     }
     if (!winner) winner = myPlayerId;
-    showEndGame({ winner: winner, totalScores: totalScores || {}, roundScores: roundScores || {}, players: players });
+    showEndGame({ winner: winner, totalScores: totalScores || {}, roundScores: roundScores || {}, players: players, knockId: myPlayerId });
   } catch(e) { console.error('doKnock error:', e); }
 }
 
@@ -819,7 +819,7 @@ async function handleKnockout(koId) {
     // NOTE: คอลัมน์ rooms.winner / totalScores ยังไม่ถูก apply (SQL fix pending)
     // จำนุแที่ไปที่ game JSONB ที่ไม่ต้องออบได้
     await saveEndStateClientSide(winner, totalScores, roundScores);
-    showEndGame({ winner: winner, totalScores: totalScores, roundScores: roundScores, players: players, knockBonus: knockBonus });
+    showEndGame({ winner: winner, totalScores: totalScores, roundScores: roundScores, players: players, knockBonus: knockBonus, knockId: koId });
   } catch(e) { console.error('handleKnockout error:', e); }
 }
 
@@ -1514,26 +1514,131 @@ function resolveEndGame(room, extra) {
 function showEndGame(data) {
   try {
     confetti();
+    data = data || {};
     var winner = data.winner;
     var totalScores = data.totalScores || {};
     var roundScores = data.roundScores || {};
     var players = data.players || {};
-    var winnerEl = document.getElementById('winner-name');
-    if (winnerEl) winnerEl.textContent = '🏆 ' + (players[winner] ? players[winner].name : '??') + ' ชนะ!';
-    var table = document.getElementById('endgame-table');
-    if (table) {
-      table.innerHTML = '<tr><th>ผู้เล่น</th><th>แต้มรอบนี้</th><th>รวมสะสม</th></tr>';
-      for (var pid in totalScores) {
-        var p = players[pid] || {};
-        var rs = roundScores[pid] || 0;
-        table.innerHTML += '<tr class="' + (pid === winner ? 'winner-row' : '') + '">' +
-          '<td>' + (p.isBot ? '🤖 ' : '👤 ') + (p.name || '??') + (pid === winner ? ' 👑' : '') + '</td>' +
-          '<td>' + (rs > 0 ? '+' : '') + rs + '</td><td>' + (totalScores[pid] > 0 ? '+' : '') + totalScores[pid] + '</td></tr>';
+    var br = data.breakdown || endgameBreakdown(data.knockId);
+    var rows = document.getElementById('endgame-rows');
+    if (rows) {
+      // เรียงตามคะแนนรอบนี้ (มาก→น้อย) แล้วใส่อันดับ 1..4
+      var list = [];
+      for (var pid in br) {
+        list.push({ pid: pid, round: (roundScores[pid] !== undefined ? roundScores[pid] : br[pid].round), b: br[pid] });
       }
+      list.sort(function(a, b) { return (b.round || 0) - (a.round || 0); });
+      var html = '';
+      for (var i = 0; i < list.length; i++) {
+        var it = list[i];
+        var p = players[it.pid] || {};
+        var av = avatarFor(it.pid);
+        var b = it.b || {};
+        var round = it.round || 0;
+        var total = (totalScores[it.pid] !== undefined ? totalScores[it.pid] : round);
+        var knock = (b.isKnock || it.pid === winner) && (b.knockBonus > 0);
+        html += '<div class="eg-row r' + Math.min(4, i + 1) + '">' +
+          '<div class="eg-rank-bar"></div>' +
+          '<div class="eg-av">' + av.e + '</div>' +
+          '<div class="eg-who">' +
+            '<div class="eg-nm">' + (p.isBot ? '<span class="eg-bot">🤖</span> ' : '') + escHtml(p.name || '??') +
+              (it.pid === winner ? ' <span class="eg-crown">👑</span>' : '') + '</div>' +
+            '<div class="eg-cards">' + egCardsHtml(b.meldCards) + (b.meldCards && b.meldCards.length ? '<span class="eg-empty">·</span>' : '') + egCardsHtml(b.handCards) + '</div>' +
+          '</div>' +
+          '<div class="eg-pts">' +
+            '<div class="eg-pt"><span class="lbl">เกิด/ลง/ฝาก</span><span class="val ' + (b.meld > 0 ? 'pos' : 'zero') + '">+' + (b.meld || 0) + 'P</span></div>' +
+            '<div class="eg-pt"><span class="lbl">ไพ่บนมือ</span><span class="val ' + (b.hand > 0 ? 'neg' : 'zero') + '">' + (b.hand > 0 ? '-' : '0') + (b.hand || 0) + 'P</span></div>' +
+            '<div class="eg-pt"><span class="lbl">คะแนนพิเศษ</span><span class="val ' + (b.bonus > 0 ? 'pos' : 'zero') + '">' + (b.bonus > 0 ? '+' : '') + (b.bonus || 0) + 'P</span>' +
+              (knock ? '<span class="eg-knock">น็อค +' + (b.knockBonus || 0) + 'P</span>' : '') + '</div>' +
+            '<div class="eg-pt"><span class="lbl">คะแนนรอบนี้</span><span class="val ' + (round > 0 ? 'pos' : (round < 0 ? 'neg' : 'zero')) + '">' + (round > 0 ? '+' : '') + round + 'P</span></div>' +
+            '<div class="eg-pt"><span class="lbl">คะแนนรวม</span><span class="val ' + (total > 0 ? 'pos' : (total < 0 ? 'neg' : 'zero')) + '">' + (total > 0 ? '+' : '') + total + 'P</span></div>' +
+          '</div>' +
+        '</div>';
+      }
+      rows.innerHTML = html || '<div class="eg-empty">ไม่มีข้อมูลคะแนน</div>';
+    }
+    // ห้อง + กองจั่ว/กองทิ้ง
+    var rcEl = document.getElementById('eg-roomcode');
+    if (rcEl) rcEl.textContent = roomCode || '-------';
+    var deckEl = document.getElementById('eg-deck');
+    if (deckEl) {
+      var dcount = (currentGame && currentGame.deck) ? currentGame.deck.length : 0;
+      deckEl.innerHTML = dcount ? '<span class="eg-card">📦 ' + dcount + '</span>' : '<span class="eg-empty">ว่าง</span>';
+    }
+    var disEl = document.getElementById('eg-discard');
+    if (disEl) {
+      var disc = (currentGame && currentGame.discardPile) ? currentGame.discardPile : [];
+      var tail = disc.slice(-4);
+      disEl.innerHTML = tail.length ? tail.map(function(c) { return egCardHtml(c); }).join('') : '<span class="eg-empty">ว่าง</span>';
     }
     var modal = document.getElementById('endgame-modal');
     if (modal) modal.classList.add('active');
   } catch(e) { console.error('showEndGame error:', e); }
+}
+
+function escHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+function egCardHtml(code) {
+  var c = codeToCard(code);
+  if (!c) return '';
+  var cls = handCardClass(c);
+  return '<span class="eg-card ' + cls + '">' + c.rank + '<br>' + c.suit + '</span>';
+}
+function egCardsHtml(codes) {
+  if (!codes || !codes.length) return '';
+  return codes.map(egCardHtml).join('');
+}
+
+// คำนวณรายละเอียดคะแนนรายคน (ชุด/ฝาก, ไพ่ค้างมือ, โบนัสน็อค) สำหรับหน้าสรุป
+function endgameBreakdown(knockId) {
+  var game = currentGame || {};
+  var out = {};
+  if (!game.hands) return out;
+  var ko = knockId || game.knockPlayerId || null;
+  for (var pid in game.hands) {
+    var meldPts = 0, meldCards = [];
+    var melds = (game.melds && game.melds[pid]) ? game.melds[pid] : [];
+    for (var mi = 0; mi < melds.length; mi++) {
+      var mc = Array.isArray(melds[mi]) ? melds[mi] : (melds[mi].cards || []);
+      for (var ci = 0; ci < mc.length; ci++) {
+        var c = codeToCard(mc[ci]);
+        if (c) { meldPts += cardPoints(c); meldCards.push(mc[ci]); }
+      }
+    }
+    var handPts = 0, handCards = [];
+    var hc = game.hands[pid] || [];
+    for (var ci2 = 0; ci2 < hc.length; ci2++) {
+      var c2 = codeToCard(hc[ci2]);
+      if (c2) { handPts += cardPoints(c2); handCards.push(hc[ci2]); }
+    }
+    var isKo = (pid === ko);
+    if (isKo) handPts = 0;
+    var hasMeld = game.hasFirstMeld && game.hasFirstMeld[pid];
+    if (!hasMeld && !isKo) handPts = handPts * 2;
+    var bonus = 0, knockBonus = 0;
+    if (isKo) {
+      knockBonus = hasMeld ? 50 : 100;
+      bonus += knockBonus;
+      if (game.headPoints) bonus += game.headPoints;
+    }
+    out[pid] = {
+      meld: meldPts, meldCards: meldCards,
+      hand: handPts, handCards: handCards,
+      bonus: bonus, knockBonus: knockBonus, isKnock: isKo,
+      round: meldPts - handPts + bonus
+    };
+  }
+  return out;
+}
+
+function closeEndGame() {
+  try {
+    var modal = document.getElementById('endgame-modal');
+    if (modal) modal.classList.remove('active');
+  } catch(e) {}
 }
 
 async function playAgain() {
