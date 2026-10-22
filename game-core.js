@@ -1547,7 +1547,7 @@ function showEndGame(data) {
           '</div>' +
           '<div class="eg-pts">' +
             '<div class="eg-pt"><span class="lbl">เกิด/ลง/ฝาก</span><span class="val ' + (b.meld > 0 ? 'pos' : 'zero') + '">+' + (b.meld || 0) + 'P</span></div>' +
-            '<div class="eg-pt"><span class="lbl">ไพ่บนมือ</span><span class="val ' + (b.hand > 0 ? 'neg' : 'zero') + '">' + (b.hand > 0 ? '-' : '0') + (b.hand || 0) + 'P</span></div>' +
+            '<div class="eg-pt"><span class="lbl">ไพ่บนมือ</span><span class="val ' + (b.hand > 0 ? 'neg' : 'zero') + '">' + (b.hand > 0 ? '-' + b.hand : '0') + 'P</span></div>' +
             '<div class="eg-pt"><span class="lbl">คะแนนพิเศษ</span><span class="val ' + (b.bonus > 0 ? 'pos' : 'zero') + '">' + (b.bonus > 0 ? '+' : '') + (b.bonus || 0) + 'P</span>' +
               (knock ? '<span class="eg-knock">น็อค +' + (b.knockBonus || 0) + 'P</span>' : '') + '</div>' +
             '<div class="eg-pt"><span class="lbl">คะแนนรอบนี้</span><span class="val ' + (round > 0 ? 'pos' : (round < 0 ? 'neg' : 'zero')) + '">' + (round > 0 ? '+' : '') + round + 'P</span></div>' +
