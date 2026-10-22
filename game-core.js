@@ -323,6 +323,147 @@ async function rpcPlayTurn(action, opts) {
     return null;
   }
 }
+// ============================================================
+// FIX v36 — หยิบไพ่จากกองทิ้ง (atomic ฝั่ง client)
+// ปัญหา: RPC play_turn PICK_DISCARD ที่ deploy อยู่ใช้โค้ดเก่า ซึ่ง
+//   "เอาไพ่ที่เหลือในกองทิ้ง" ไปใส่มือ แทนที่จะใส่ "ไพ่ที่หยิบ"
+//   → ไพ่ที่หยิบหายจากเกม, มือได้ไพ่ผิดใบ → เกิดไม่ได้ + กองทิ้งหาย
+// แก้: ทำ PICK_DISCARD เองฝั่ง client แบบ atomic พร้อม optimistic lock
+//   (อัปเดตแบบมีเงื่อนไข version → กันเขียนทับข้อมูลผู้เล่นอื่น)
+// ============================================================
+async function resyncGame() {
+  try {
+    var r = await db.from('rooms').select('id,code,game,version').eq('id', roomCode).single();
+    if (r.data && r.data.game) {
+      currentGame = r.data.game;
+      currentRoomVersion = r.data.version || (r.data.game.version || currentRoomVersion);
+      renderGame(currentGame);
+    }
+  } catch(e) { console.warn('resyncGame error:', e.message); }
+}
+
+// หยิบไพ่จากกองทิ้ง: ย้ายไพ่ที่หยิบ (ตั้งแต่ใบนี้ขึ้นไป) เข้ามือ + ตัดกองทิ้งที่เหลือ
+// คืน {ok, game, taken} หรือ null (มีคนเล่นไปแล้ว)
+async function pickDiscardClientSide(idx, pid) {
+  try {
+    var rowRes = await db.from('rooms').select('id,game,version').eq('id', roomCode).single();
+    if (rowRes.error || !rowRes.data || !rowRes.data.game) { console.warn('[PICK] อ่านห้องไม่ได้'); return null; }
+    var g = rowRes.data.game;
+    var rowVer = rowRes.data.version || 0;
+    var gameVer = g.version || 0;
+    var ver = Math.max(rowVer, gameVer);
+    var discard = g.discardPile || [];
+    if (discard.length === 0 || idx < 0 || idx >= discard.length) return null;
+    // เทียบเท่า NOT_YOUR_TURN / phase ของ server
+    if (g.turnPlayerId && g.turnPlayerId !== pid) { console.warn('[PICK] ไม่ใช่ตาของผู้เล่นนี้'); return null; }
+    if (g.phase && g.phase !== 'draw') { console.warn('[PICK] เฟสไม่ใช่ draw'); return null; }
+
+    var taken = discard.slice(idx);        // ไพ่ที่หยิบ + ทุกใบที่อยู่บน
+    var remaining = discard.slice(0, idx);  // ไพ่ที่เหลือในกองทิ้ง (ไม่หาย!)
+
+    var ng = JSON.parse(JSON.stringify(g));
+    ng.hands = ng.hands || {};
+    var hand = (ng.hands[pid] || []).slice();
+    ng.hands[pid] = hand.concat(taken);
+    ng.discardPile = remaining;
+    ng.pickedFromDiscard = ng.pickedFromDiscard || {};
+    ng.pickedFromDiscard[pid] = taken;
+    ng.phase = 'action';
+    // โทษสเปโต (2♣ / Q♠) ถ้าหยิบสเปโตขึ้นมา (ตรงกับ logic ใน FIX-scoring-2026-10-21.sql: หัก 100 แต้ม)
+    var hasSpeto = taken.some(function(c){ return c === '2♣' || c === 'Q♠'; });
+    var speto = hasSpeto ? 1 : 0;
+    if (speto > 0) {
+      ng.spettoPenalty = ng.spettoPenalty || {};
+      ng.spettoPenalty[pid] = (ng.spettoPenalty[pid] || 0) + 100;
+    }
+    ng.version = ver + 1;
+
+    var upd = await db.from('rooms')
+      .update({ game: ng, version: ng.version })
+      .eq('id', roomCode)
+      .eq('version', rowVer)                // ← optimistic lock: เขียนได้ก็ต่อเมื่อยังเป็นเวอร์ชันเดิม
+      .select('version');
+    if (upd.error || !upd.data || upd.data.length === 0) {
+      console.warn('[PICK] version conflict → resync');
+      await resyncGame();
+      return null;
+    }
+    currentGame = ng;
+    currentRoomVersion = ng.version;
+    return { ok: true, game: ng, taken: taken, speto: speto };
+  } catch(e) { console.error('pickDiscardClientSide error:', e); return null; }
+}
+
+// ล้างธง "ไพ่ที่หยิบ" ของผู้เล่น (หลังเกิดแล้ว หรือ คืนไพ่แล้ว)
+async function clearPickedFlag(pid) {
+  try {
+    var rowRes = await db.from('rooms').select('id,game,version').eq('id', roomCode).single();
+    if (rowRes.error || !rowRes.data || !rowRes.data.game) return false;
+    var g = rowRes.data.game;
+    var rowVer = rowRes.data.version || 0;
+    var ver = Math.max(rowVer, g.version || 0);
+    var pfd = g.pickedFromDiscard || {};
+    if (!pfd[pid] || pfd[pid].length === 0) return true;
+    var ng = JSON.parse(JSON.stringify(g));
+    ng.pickedFromDiscard = ng.pickedFromDiscard || {};
+    ng.pickedFromDiscard[pid] = [];
+    ng.version = ver + 1;
+    var upd = await db.from('rooms')
+      .update({ game: ng, version: ng.version })
+      .eq('id', roomCode)
+      .eq('version', rowVer)
+      .select('version');
+    if (upd.error || !upd.data || upd.data.length === 0) { await resyncGame(); return false; }
+    currentGame = ng;
+    currentRoomVersion = ng.version;
+    return true;
+  } catch(e) { console.error('clearPickedFlag error:', e); return false; }
+}
+
+// คืนไพ่ที่หยิบกลับกองทิ้ง (กันผู้เล่นค้าง ถ้าไม่มีชุดเกิด)
+async function returnPickedCardsFor(pid) {
+  try {
+    var taken = (currentGame && currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[pid]) ? currentGame.pickedFromDiscard[pid].slice() : [];
+    if (taken.length === 0) return false;
+    var rowRes = await db.from('rooms').select('id,game,version').eq('id', roomCode).single();
+    if (rowRes.error || !rowRes.data || !rowRes.data.game) return false;
+    var g = rowRes.data.game;
+    var rowVer = rowRes.data.version || 0;
+    var ver = Math.max(rowVer, g.version || 0);
+    var ng = JSON.parse(JSON.stringify(g));
+    ng.hands[pid] = (ng.hands[pid] || []).filter(function(c){ return taken.indexOf(c) === -1; });
+    ng.discardPile = (ng.discardPile || []).concat(taken);
+    ng.pickedFromDiscard = ng.pickedFromDiscard || {};
+    ng.pickedFromDiscard[pid] = [];
+    ng.phase = 'action';
+    ng.version = ver + 1;
+    var upd = await db.from('rooms')
+      .update({ game: ng, version: ng.version })
+      .eq('id', roomCode)
+      .eq('version', rowVer)
+      .select('version');
+    if (upd.error || !upd.data || upd.data.length === 0) { await resyncGame(); return false; }
+    currentGame = ng;
+    currentRoomVersion = ng.version;
+    return true;
+  } catch(e) { console.error('returnPickedCardsFor error:', e); return false; }
+}
+
+async function returnPickedCards() {
+  try {
+    var pid = myPlayerId;
+    var taken = myPickedCodes();
+    if (taken.length === 0) { pendingPickedCodes = []; closeMeldModal(); renderYourHand(); updateActionBtns(); return; }
+    var ok = await returnPickedCardsFor(pid);
+    if (!ok) { notify('❌ คืนไพ่ไม่สำเร็จ ลองใหม่'); return; }
+    pendingPickedCodes = [];
+    closeMeldModal();
+    renderYourHand();
+    updateActionBtns();
+    notify('↩️ คืนไพ่ที่หยิบกลับกองทิ้งแล้ว');
+  } catch(e) { console.error('returnPickedCards error:', e); }
+}
+
 var selectedCards = [];
 var myHandOrder = null;   // ลำดับการแสดงไพ่ (ปุ่มจัดไพ่อัตโนมัติ)
 var roomLevel = 1;          // ระดับห้อง (0.5 / 0.75 / 1 / 3) — เก็บใน game JSONB
@@ -647,11 +788,22 @@ async function drawCard() {
   } catch(e) { console.error('drawCard error:', e); }
 }
 
+// ไพ่ที่หยิบจากกองทิ้ง (รวมทั้ง state ฝั่ง client และที่บันทึกไว้ใน DB)
+// รวมสองที่ไว้ เพื่อให้รีเฟรชหน้าเว็บแล้วกติกา "ต้องเกิดก่อนทิ้ง" ยังบังคับอยู่
+function myPickedCodes() {
+  var fromGame = (currentGame && currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[myPlayerId]) || [];
+  var out = fromGame.slice();
+  for (var i = 0; i < pendingPickedCodes.length; i++) {
+    if (out.indexOf(pendingPickedCodes[i]) < 0) out.push(pendingPickedCodes[i]);
+  }
+  return out;
+}
+
 async function pickFromDiscard(idx) {
   try {
     if (!currentGame || !myTurn) return;
     if (currentGame.phase !== 'draw') { notify('ต้องจั่วหรือหยิบจากกองทิ้งก่อน!'); return; }
-    var discard = currentGame.discardPile.slice();
+    var discard = (currentGame.discardPile || []).slice();
     if (discard.length === 0 || idx < 0 || idx >= discard.length) return;
 
     var taken = discard.slice(idx);
@@ -662,17 +814,15 @@ async function pickFromDiscard(idx) {
       return;
     }
 
-    var r = await rpcPlayTurn('PICK_DISCARD', { discardIndex: idx });
-    if (!r) return;
+    // FIX v36: ทำหยิบไพ่เองฝั่ง client แบบ atomic (RPC PICK_DISCARD ฝั่ง server ตัดไพ่ผิดจนไพ่หาย)
+    var res = await pickDiscardClientSide(idx, myPlayerId);
+    if (!res) { notify('❌ หยิบไพ่ไม่สำเร็จ (มีคนเล่นไปแล้ว) ลองใหม่'); return; }
 
-    // FIX: force-update currentGame from RPC result BEFORE rendering
-    // to guarantee renderMeldOptions sees the NEW hand (with picked card)
-    if (r.game) { currentGame = r.game; }
-
-    pendingPickedCodes = taken;
+    pendingPickedCodes = res.taken;
     renderYourHand();
-    openMeldModal(taken);
-    if (r.mii_penalty) {
+    renderDiscardPile(currentGame);
+    openMeldModal(res.taken);
+    if (res.speto > 0) {
       notify('⚠️ ทิ้งมี่! -100 แต้ม');
     } else {
       notify('🗑️ หยิบได้แล้ว! ต้องเกิดใบที่หยิบทันที');
@@ -683,7 +833,7 @@ async function pickFromDiscard(idx) {
 async function discardSelected() {
   try {
     if (!currentGame || !myTurn) return;
-    if (currentGame.phase === 'action' && pendingPickedCodes.length > 0) {
+    if (currentGame.phase === 'action' && myPickedCodes().length > 0) {
       notify('❌ ต้องเกิดใบที่หยิบจากกองทิ้งก่อนทิ้ง!'); return;
     }
     if (selectedCards.length !== 1) { notify('เลือกไพ่ 1 ใบที่จะทิ้ง'); return; }
@@ -763,7 +913,7 @@ async function endTurn() {
   try {
     if (!currentGame || !myTurn) return;
     if (currentGame.phase === 'draw') { notify('ต้องจั่วหรือหยิบจากกองทิ้งก่อน!'); return; }
-    if (pendingPickedCodes.length > 0) { notify('❌ ต้องเกิดใบที่หยิบจากกองทิ้งก่อน!'); return; }
+    if (myPickedCodes().length > 0) { notify('❌ ต้องเกิดใบที่หยิบจากกองทิ้งก่อน!'); return; }
     if (!hasDiscardedThisTurn) { notify('❌ ต้องทิ้งไพ่ 1 ใบก่อนจบตา!'); return; }
     var r = await rpcPlayTurn('END_TURN');
     if (!r) return;
@@ -889,27 +1039,32 @@ async function botPlay(botId) {
         var taken = discard.slice(di);
         var meldable = canMeldWithPicked(taken, handCodes);
         if (meldable) {
-          var r = await rpcPlayTurn('PICK_DISCARD', { discardIndex: di });
-          if (!r) { botRunning[botId] = false; return; }
+          // FIX v36: หยิบไพ่ฝั่ง client (RPC PICK_DISCARD ฝั่ง server ตัดไพ่ผิดจนไพ่หาย)
+          var pres = await pickDiscardClientSide(di, botId);
+          if (!pres) { botRunning[botId] = false; return; }
           hand = codesToCards(currentGame.hands[botId] || []);
           handCodes = hand.map(function(c){ return c.code; });
           pickedThisTurn = true;
           await delay(300);
 
-          // Meld picked cards immediately
-          var hasFM = currentGame.hasFirstMeld && currentGame.hasFirstMeld[botId];
-          if (!hasFM) {
-            var botM = findMelds(hand);
-            var validM = botM.filter(function(m){ return m.cards.some(function(c){ return taken.indexOf(c.code) >= 0; }); });
-            if (validM.length > 0) {
-              var bmgCodes = validM[0].cards.map(function(c){ return c.code; });
-              var r2 = await rpcPlayTurn('MELD', { meldCodes: bmgCodes, playerId: botId });
-              if (r2) {
-                hand = codesToCards(currentGame.hands[botId] || []);
-                handCodes = hand.map(function(c){ return c.code; });
-              }
-              await delay(300);
+          // Meld picked cards immediately (ต้องเกิดไพ่ที่หยิบเสมอ ไม่งั้นค้าง/ทิ้งผิดกติกา)
+          var botM = findMelds(hand);
+          var validM = botM.filter(function(m){ return m.cards.some(function(c){ return taken.indexOf(c.code) >= 0; }); });
+          if (validM.length > 0) {
+            var bmgCodes = validM[0].cards.map(function(c){ return c.code; });
+            var r2 = await rpcPlayTurn('MELD', { meldCodes: bmgCodes, playerId: botId });
+            if (r2) {
+              hand = codesToCards(currentGame.hands[botId] || []);
+              handCodes = hand.map(function(c){ return c.code; });
+              await clearPickedFlag(botId);
             }
+            await delay(300);
+          } else {
+            // ไม่มีชุดที่ใช้ไพ่ที่หยิบ → คืนไพ่กลับกองทิ้ง (กันบอทค้าง)
+            await returnPickedCardsFor(botId);
+            hand = codesToCards(currentGame.hands[botId] || []);
+            handCodes = hand.map(function(c){ return c.code; });
+            pickedThisTurn = false;
           }
           break;
         }
@@ -992,8 +1147,10 @@ function openMeldModal(pickedCodes) {
   window._selectedMeld = null;
   modalOpen = true;
   try {
+    // ถ้าไม่ได้ระบุ → ใช้ไพ่ที่หยิบค้างอยู่ (ถ้ามี) เพื่อบังคับให้เลือกชุดที่ใช้ไพ่ที่หยิบ
+    var pc = (pickedCodes && pickedCodes.length > 0) ? pickedCodes : myPickedCodes();
     document.getElementById('meld-modal').classList.add('active');
-    renderMeldOptions(pickedCodes || []);
+    renderMeldOptions(pc);
     document.getElementById('btn-confirm-meld').disabled = true;
   } catch(e) { console.error('openMeldModal error:', e); }
 }
@@ -1001,6 +1158,15 @@ function openMeldModal(pickedCodes) {
 function closeMeldModal() {
   modalOpen = false;
   try { document.getElementById('meld-modal').classList.remove('active'); } catch(e) {}
+}
+
+// กดยกเลิก: ถ้ายังหยิบไพ่ค้างอยู่ → คืนไพ่กลับกองทิ้ง (กันผู้เล่นค้างจนเกมกินไม่ได้)
+async function onCancelMeld() {
+  if (myPickedCodes().length > 0) {
+    await returnPickedCards();
+    return;
+  }
+  closeMeldModal();
 }
 
 function renderMeldOptions(pickedCodes) {
@@ -1015,7 +1181,10 @@ function renderMeldOptions(pickedCodes) {
     if (!container) return;
     if (melds.length === 0) {
       container.innerHTML = '<div style="color:#aaa;text-align:center;padding:20px">ไม่พบชุดไพ่ที่เกิดได้<br><small>ต้องมีไพ่ 3 ใบขึ้นไป</small></div>' +
-        ((pickedCodes && pickedCodes.length > 0) ? '<div style="color:#e94560;text-align:center;padding:10px">⚠️ ต้องเกิดใบที่หยิบ!</div>' : '');
+        ((pickedCodes && pickedCodes.length > 0)
+          ? '<div style="color:#e94560;text-align:center;padding:10px">⚠️ ต้องเกิดใบที่หยิบ!</div>' +
+            '<div style="text-align:center;padding:4px"><button class="btn btn-secondary" onclick="returnPickedCards()">↩️ คืนไพ่ที่หยิบกลับกองทิ้ง</button></div>'
+          : '');
       return;
     }
     var html = '<div style="color:#aaa;font-size:0.9rem;margin-bottom:12px;text-align:center">เลือกชุดไพ่ที่จะเกิด:</div><div class="meld-sets">';
@@ -1030,7 +1199,10 @@ function renderMeldOptions(pickedCodes) {
       html += '<div class="meld-set" onclick="selectMeld(' + mi + ', ' + JSON.stringify(pickedCodes||[]).replace(/"/g,'&quot;') + ')">' + cardsHtml + '<div style="width:100%;font-size:0.7rem;color:#888;text-align:center;margin-top:4px">' + (meld.type==='set'?'ตอง':'เรียง') + '</div></div>';
     }
     html += '</div>';
-    if (pickedCodes && pickedCodes.length > 0) html += '<div style="color:#ffd700;font-size:0.85rem;text-align:center;margin-top:10px">✨ ต้องเลือกชุดที่ใช้ใบที่หยิบ</div>';
+    if (pickedCodes && pickedCodes.length > 0) {
+      html += '<div style="color:#ffd700;font-size:0.85rem;text-align:center;margin-top:10px">✨ ต้องเลือกชุดที่ใช้ใบที่หยิบ</div>' +
+        '<div style="text-align:center;margin-top:8px"><button class="btn btn-secondary" onclick="returnPickedCards()">↩️ คืนไพ่ที่หยิบกลับกองทิ้ง</button></div>';
+    }
     container.innerHTML = html;
   } catch(e) { console.error('renderMeldOptions error:', e); }
 }
@@ -1066,6 +1238,8 @@ async function confirmMeld() {
     selectedCards = [];
     var r = await rpcPlayTurn('MELD', { meldCodes: meldedCodes });
     if (!r) { selectedCards = []; return; } // revert on failure
+    // FIX v36: server บางเวอร์ชันไม่ล้าง pickedFromDiscard → ล้างเองให้แน่ (ไม่งั้นผู้เล่นค้าง)
+    await clearPickedFlag(myPlayerId);
     // FIX: transition phase to 'action' so discard btn enables immediately
     if (currentGame) { currentGame.phase = 'action'; }
     closeMeldModal();
@@ -1459,8 +1633,13 @@ function updateActionBtns() {
     var myHand = currentGame.hands[myPlayerId] || [];
     var isLastCard = myHand.length === 0;
     var hasMeld = currentGame.hasFirstMeld && currentGame.hasFirstMeld[myPlayerId];
-    var picked = pendingPickedCodes.length > 0;
+    var picked = myPickedCodes().length > 0;
     var btnKnock = document.getElementById('btn-knock');
+    var btnRet = document.getElementById('btn-return-picked');
+    if (btnRet) {
+      btnRet.style.display = picked ? 'inline-block' : 'none';
+      btnRet.disabled = !picked || !myTurn;
+    }
 
     if (myTurn) {
       var phase = currentGame.phase || 'draw';
