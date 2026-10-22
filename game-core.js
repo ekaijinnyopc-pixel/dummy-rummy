@@ -324,6 +324,8 @@ async function rpcPlayTurn(action, opts) {
   }
 }
 var selectedCards = [];
+var myHandOrder = null;   // ลำดับการแสดงไพ่ (ปุ่มจัดไพ่อัตโนมัติ)
+var roomLevel = 1;          // ระดับห้อง (0.5 / 0.75 / 1 / 3) — เก็บใน game JSONB
 var myTurn = false;
 var hasDiscardedThisTurn = false;  // ต้องทิ้งไพ่ 1 ใบก่อนจบตา (บังคับจาก server ด้วย)
 var pendingPickedCodes = [];   // codes picked from discard this turn (must meld)
@@ -492,6 +494,8 @@ async function createRoom() {
     if (!name) { notify('กรุณาใส่ชื่อ'); return; }
     if (!db) { notify('กรุณารอสักครู่... กดอีกครั้ง'); return; }
     var totalPlayers = parseInt(document.getElementById('player-count').value) || 4;
+    var lvlEl = document.getElementById('room-level');
+    roomLevel = lvlEl ? (parseFloat(lvlEl.value) || 1) : 1;
     roomCode = genRoomCode();
     myName = name;
     myPlayerId = 'p_' + Math.random().toString(36).substr(2, 9);
@@ -503,6 +507,7 @@ async function createRoom() {
     document.getElementById('display-room-code').textContent = roomCode;
     await setupRealtime(roomCode);
     renderLobby(players, totalPlayers);
+    updateLobbyLevelLabel();
     notify('✅ สร้างห้องสำเร็จ!');
   } catch(e) { console.error('createRoom error:', e); notify('❌ ผิดพลาด: ' + e.message); }
 }
@@ -542,6 +547,7 @@ async function joinRoom() {
     document.getElementById('display-room-code').textContent = code;
     await setupRealtime(code);
     renderLobby(newPlayers, totalPlayers);
+    updateLobbyLevelLabel();
     notify('✅ เข้าห้องสำเร็จ!');
   } catch(e) { console.error('joinRoom error:', e); notify('❌ ผิดพลาด: ' + e.message); }
 }
@@ -602,6 +608,7 @@ async function startGame() {
       lastDiscard: null,
       deckEmpty: false,
       pickedFromDiscard: {},
+      level: roomLevel,
       version: 1
     };
     for (var mi = 0; mi < playerIds.length; mi++) {
@@ -734,14 +741,21 @@ async function doKnock() {
     var myHand = currentGame.hands[myPlayerId] || [];
     if (myHand.length !== 0) { notify('ไพ่ต้องเหลือ 0 ใบถึงจะน็อคได้'); return; }
     var r = await rpcPlayTurn('KNOCK');
-    if (!r) return;
-    // Fetch players for showEndGame
     var _p = await db.from('rooms').select('players').eq('id', roomCode).single();
     var players = (_p && _p.data && _p.data.players) || {};
-    var roundScores = r.round_scores || (r.game && r.game.roundScores) || {};
-    var totalScores = r.total_scores || (r.game && (r.game.totalScores || r.game.scores)) || currentGame.scores || {};
-    var winner = (r.winner !== undefined && r.winner !== null) ? r.winner : (r.game && r.game.winner) || myPlayerId;
-    showEndGame({ winner: winner, totalScores: totalScores, roundScores: roundScores, players: players });
+    var roundScores = r && (r.round_scores || (r.game && r.game.roundScores));
+    var totalScores = r && (r.total_scores || (r.game && (r.game.totalScores || r.game.scores)));
+    var winner = r && ((r.winner !== undefined && r.winner !== null) ? r.winner : (r.game && r.game.winner));
+    if (!roundScores || Object.keys(roundScores).length === 0) {
+      // fallback: คำนณณต้อย client-side แล้วบันที่ไปที่ game JSONB
+      var calc = computeRoundScores(myPlayerId);
+      roundScores = calc.roundScores;
+      totalScores = calc.totalScores;
+      winner = calc.winner || myPlayerId;
+      await saveEndStateClientSide(winner, totalScores, roundScores);
+    }
+    if (!winner) winner = myPlayerId;
+    showEndGame({ winner: winner, totalScores: totalScores || {}, roundScores: roundScores || {}, players: players });
   } catch(e) { console.error('doKnock error:', e); }
 }
 
@@ -802,7 +816,9 @@ async function handleKnockout(koId) {
       }
     }
 
-    await db.from('rooms').update({ status: 'ended', winner: winner, totalScores: totalScores }).eq('id', roomCode);
+    // NOTE: คอลัมน์ rooms.winner / totalScores ยังไม่ถูก apply (SQL fix pending)
+    // จำนุแที่ไปที่ game JSONB ที่ไม่ต้องออบได้
+    await saveEndStateClientSide(winner, totalScores, roundScores);
     showEndGame({ winner: winner, totalScores: totalScores, roundScores: roundScores, players: players, knockBonus: knockBonus });
   } catch(e) { console.error('handleKnockout error:', e); }
 }
@@ -1338,6 +1354,17 @@ function renderYourHand() {
     var handCodes = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
     var hand = codesToCards(handCodes);
     var sorted = sortHand(hand);
+    if (myHandOrder && myHandOrder.length === hand.length) {
+      var byCode = {};
+      for (var bci = 0; bci < hand.length; bci++) byCode[hand[bci].code] = hand[bci];
+      var ordered = [];
+      var allFound = true;
+      for (var oi = 0; oi < myHandOrder.length; oi++) {
+        if (!byCode[myHandOrder[oi]]) { allFound = false; break; }
+        ordered.push(byCode[myHandOrder[oi]]);
+      }
+      if (allFound) sorted = ordered; else myHandOrder = null;
+    }
     var pickedCodes = (currentGame && currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[myPlayerId]) || [];
     var html = '';
     for (var hi = 0; hi < sorted.length; hi++) {
@@ -1473,6 +1500,14 @@ function resolveEndGame(room, extra) {
              : (g.winner !== undefined ? g.winner : null);
   var totalScores = e.totalScores || r.totalScores || g.totalScores || g.scores || {};
   var roundScores = e.roundScores || g.roundScores || {};
+  if (!winner) {
+    // ถ้ารฐณณติทฌมีเลือกไม่มีคะแนน์ยองได้ → สลักคะแนน์กอดสุด
+    if (Object.keys(totalScores).length) {
+      var mn = null;
+      for (var k in totalScores) { if (mn === null || totalScores[k] > totalScores[mn]) mn = k; }
+      if (mn !== null) winner = mn;
+    }
+  }
   return { winner: winner, totalScores: totalScores, roundScores: roundScores, players: players };
 }
 
@@ -1534,6 +1569,7 @@ async function playAgain() {
       lastDiscard: null,
       deckEmpty: false,
       pickedFromDiscard: {},
+      level: (currentGame && currentGame.level) || roomLevel,
       version: 1
     };
     for (var mi = 0; mi < pids.length; mi++) { gameData.melds[pids[mi]] = []; gameData.scores[pids[mi]] = 0; gameData.hasFirstMeld[pids[mi]] = false; }
@@ -1646,6 +1682,178 @@ function confetti() {
     style.textContent = '@keyframes confetti-fall{0%{transform:translateY(0) translateX(0) rotate(0)}100%{transform:translateY(100vh) translateX(var(--tx)) rotate(720deg)}}';
     document.head.appendChild(style);
   } catch(e) {}
+}
+
+
+// --- จัดไพ่อัตโนมัติ (คล้ายต้นแบบ) ---
+// จัดกลุ่มไพ่ที่เกิดเป็นชุด/ตองไว้ติดกัน แล้วไพ่ที่เหลือเรียงตามชุดและตัวเลข
+function autoSortHand() {
+  try {
+    if (!currentGame || !currentGame.hands) return;
+    var codes = (currentGame.hands[myPlayerId] || []).slice();
+    if (codes.length === 0) return;
+    var hand = codesToCards(codes);
+    var groups = [];
+    var used = {};
+    var melds = findMelds(hand);
+    for (var mi = 0; mi < melds.length; mi++) {
+      var g = melds[mi].cards.map(function(c) { return c.code; });
+      var fresh = g.filter(function(c) { return !used[c]; });
+      if (fresh.length < 2) continue;
+      fresh.forEach(function(c) { used[c] = true; });
+      groups.push(fresh);
+    }
+    var rest = hand.filter(function(c) { return !used[c.code]; })
+      .sort(function(a, b) {
+        var s1 = {'\u2660':0,'\u2665':1,'\u2666':2,'\u2663':3}[a.suit] ?? 4;
+        var s2 = {'\u2660':0,'\u2665':1,'\u2666':2,'\u2663':3}[b.suit] ?? 4;
+        if (s1 !== s2) return s1 - s2;
+        return (RANK_ORDER[a.rank]||14) - (RANK_ORDER[b.rank]||14);
+      });
+    var order = [];
+    groups.forEach(function(g) { g.forEach(function(c) { order.push(c); }); });
+    rest.forEach(function(c) { order.push(c.code); });
+    myHandOrder = order;
+    renderYourHand();
+    notify('\uD83C\uDD00 �u0e08ัดไพ่ให้แล้ว (' + groups.length + ' ชุด)');
+  } catch(e) { console.error('autoSortHand error:', e); }
+}
+
+// --- คัดลอก / แชร์รหัสห้อง ---
+function copyRoomCode() {
+  try {
+    var code = roomCode || (document.getElementById('display-room-code')||{}).textContent;
+    if (!code || code === '------') { notify('ยังไม่มีรหัสห้อง'); return; }
+    var link = location.origin + location.pathname + '?room=' + code;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(code).then(function() {
+        notify('\uD83D\uDCCB คัดลอกรหัสห้อง ' + code + ' แล้ว');
+      }).catch(function() { fallbackCopy(code, link); });
+    } else fallbackCopy(code, link);
+  } catch(e) { console.error('copyRoomCode error:', e); }
+}
+function fallbackCopy(code, link) {
+  try {
+    var ta = document.createElement('textarea');
+    ta.value = code + ' | ' + link;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    notify('\uD83D\uDCCB คัดลอกรหัสห้อง ' + code + ' แล้ว');
+  } catch(e) { notify('รหัสห้อง: ' + code); }
+}
+function shareRoom() {
+  try {
+    var code = roomCode || '';
+    if (!code) { notify('ยังไม่มีรหัสห้อง'); return; }
+    var link = location.origin + location.pathname + '?room=' + code;
+    var text = '\uD83C\uDFAE เล่นดัมมี่ด้วยกัน! รหัสห้อง: ' + code + ' (กดลิงก์เพื่อเข้าร่วม)';
+    if (navigator.share) {
+      navigator.share({ title: 'ดัมมี่ — ห้อง ' + code, text: text, url: link }).catch(function(){});
+    } else {
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(link);
+      notify('\uD83D\uDCC4 คัดลอกลิงก์เชิญแล้ว');
+    }
+  } catch(e) { console.error('shareRoom error:', e); }
+}
+
+
+// --- เล่นเร็ว: สร้างห้องแล้วเติมบอทให้จนเต็ม ---
+var BOT_NAMES = ['🤖 บอทสอง', '🤖 บอทมีดี', '🤖 บอทแขง'];
+async function quickPlay() {
+  try {
+    var nameEl = document.getElementById('create-name');
+    var name = (nameEl && nameEl.value.trim()) || 'พีเอ';
+    if (!db) { notify('กรุภาสักครู่... กดอีกครั้ง'); return; }
+    var lvlEl = document.getElementById('room-level');
+    roomLevel = lvlEl ? (parseFloat(lvlEl.value) || 1) : 1;
+    var total = 4;
+    var pcEl = document.getElementById('player-count');
+    if (pcEl && pcEl.value === '2') total = 2;
+    roomCode = genRoomCode();
+    myName = name;
+    myPlayerId = 'p_' + Math.random().toString(36).substr(2, 9);
+    var players = {};
+    players[myPlayerId] = { id: myPlayerId, name: name, isBot: false, isHost: true };
+    var botIdx = 0;
+    for (var bi = 1; bi < total; bi++) {
+      var bid = 'bot_' + bi;
+      players[bid] = { id: bid, name: BOT_NAMES[botIdx % BOT_NAMES.length], isBot: true, isHost: false };
+      botIdx++;
+    }
+    var up = await db.from('rooms').upsert({ id: roomCode, code: roomCode, players: players, status: 'lobby', totalplayers: total });
+    if (up.error) { notify('❌ สร้างห้องไม่สำเจ'); return; }
+    showScreen('lobby-screen');
+    document.getElementById('display-room-code').textContent = roomCode;
+    await setupRealtime(roomCode);
+    renderLobby(players, total);
+    updateLobbyLevelLabel();
+    notify('⚡ เติมบอทแล้ว!');
+    setTimeout(function() { startGame(); }, 600);
+  } catch(e) { console.error('quickPlay error:', e); notify('❌ ผิดพาด: ' + e.message); }
+}
+
+function updateLobbyLevelLabel() {
+  try {
+    var el = document.getElementById('lobby-level');
+    if (!el) return;
+    var lv = roomLevel || 1;
+    el.innerHTML = '🪙 ระดบห้อง: <b>' + lv + '</b>';
+  } catch(e) {}
+}
+
+// --- Client-side scoring fallback (ไม่ต้องรอ SQL fix) ---
+// คะแนน์ออบไปที่ game JSONB: game.winner / game.totalScores / game.roundScores
+function saveEndStateClientSide(winner, totalScores, roundScores) {
+  try {
+    if (!currentGame) return Promise.resolve();
+    currentGame.status = 'ended';
+    currentGame.winner = winner;
+    currentGame.totalScores = totalScores;
+    currentGame.roundScores = roundScores;
+    return db.from('rooms').update({ status: 'ended', game: currentGame }).eq('id', roomCode);
+  } catch(e) { console.error('saveEndStateClientSide error:', e); return Promise.resolve(); }
+}
+
+// คำนณณเสลคะแนน์องเรอบ (จากอันมีเลียด้อย้วนไปตี่ game JSONB)
+function computeRoundScores(koId) {
+  var game = currentGame;
+  var roundScores = {};
+  for (var pid in game.hands) {
+    var meldPts = 0;
+    var melds = (game.melds && game.melds[pid]) ? game.melds[pid] : [];
+    for (var mi = 0; mi < melds.length; mi++) {
+      var meldCodes = Array.isArray(melds[mi]) ? melds[mi] : (melds[mi].cards || []);
+      for (var ci = 0; ci < meldCodes.length; ci++) { var c = codeToCard(meldCodes[ci]); if (c) meldPts += cardPoints(c); }
+    }
+    var handPts = 0;
+    var handCodes = game.hands[pid] || [];
+    for (var ci2 = 0; ci2 < handCodes.length; ci2++) { var c2 = codeToCard(handCodes[ci2]); if (c2) handPts += cardPoints(c2); }
+    if (pid === koId) handPts = 0;
+    var hasMeld = game.hasFirstMeld && game.hasFirstMeld[pid];
+    if (!hasMeld && pid !== koId) handPts = handPts * 2;
+    roundScores[pid] = meldPts - handPts;
+  }
+  var hasMeldBeforeKnock = game.hasFirstMeld && game.hasFirstMeld[koId];
+  var knockBonus = hasMeldBeforeKnock ? 50 : 100;
+  roundScores[koId] += knockBonus;
+  if (game.headPoints) roundScores[koId] += game.headPoints;
+  var prevScores = game.scores || {};
+  var totalScores = {};
+  for (var ti = 0; ti < game.playerOrder.length; ti++) {
+    var tpid = game.playerOrder[ti];
+    totalScores[tpid] = (prevScores[tpid] || 0) + roundScores[tpid];
+  }
+  var winner = null;
+  for (var wid in totalScores) {
+    if (totalScores[wid] >= 500) {
+      var min = Infinity, winPid = null;
+      for (var w2 in totalScores) { if (totalScores[w2] < min) { min = totalScores[w2]; winPid = w2; } }
+      winner = winPid; break;
+    }
+  }
+  return { roundScores: roundScores, totalScores: totalScores, winner: winner, knockBonus: knockBonus };
 }
 
 console.log('[DummyRummy] Script parsing OK!');

@@ -643,7 +643,18 @@ body {
         <option value="4" selected>4 คน</option>
       </select>
     </div>
+    <div class="form-row">
+      <label>ระดับห้อง</label>
+      <select id="room-level">
+        <option value="0.5">🪙 0.5</option>
+        <option value="0.75">🪙 0.75</option>
+        <option value="1" selected>🪙 1</option>
+        <option value="3">🪙 3</option>
+      </select>
+      <div style="font-size:0.78rem;color:#8b8b8b;margin-top:6px">เลือกตามตารางห้องของเกมต้นแบบ</div>
+    </div>
     <button class="btn btn-primary" style="width:100%" onclick="createRoom()">🎮 สร้างห้อง</button>
+    <button class="btn btn-secondary" style="width:100%;margin-top:10px" onclick="quickPlay()">⚡ เล่นเร็ว (เติมบอทให้)</button>
   </div>
 
   <div class="divider">— หรือ —</div>
@@ -673,6 +684,11 @@ body {
     <div class="label">รหัสห้อง</div>
     <div class="code" id="display-room-code">------</div>
     <div style="color:#888;font-size:0.85rem;margin-top:8px">ส่งรหัสนี้ให้เพื่อนเข้ามาร่วมได้เลย!</div>
+    <div style="display:flex;gap:8px;margin-top:12px;justify-content:center;flex-wrap:wrap">
+      <button class="btn btn-secondary" onclick="copyRoomCode()" style="padding:8px 14px;font-size:0.85rem">📋 คัดลอกรหัส</button>
+      <button class="btn btn-secondary" onclick="shareRoom()" style="padding:8px 14px;font-size:0.85rem">📤 แชร์ลิงก์</button>
+    </div>
+    <div id="lobby-level" style="margin-top:10px;font-size:0.85rem;color:var(--gold)"></div>
   </div>
 
   <div class="player-grid" id="player-list"></div>
@@ -736,6 +752,9 @@ body {
     <div class="your-hand-header">
       <span class="yname" id="your-name">คุณ</span>
       <span class="hand-status" id="hand-status">⏳ รอตาคนอื่น...</span>
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:6px">
+      <button class="btn btn-secondary" onclick="autoSortHand()" style="padding:6px 12px;font-size:0.8rem">🔀 จัดไพ่อัตโนมัติ</button>
     </div>
     <div class="hand-cards" id="your-hand"></div>
 
@@ -805,6 +824,6 @@ body {
 <div class="confetti" id="confetti"></div>
 
 <script src="supabase.js?v=1"></script>
-<script src="game-core.js?v=33"></script>
+<script src="game-core.js?v=34"></script>
 </body>
 </html>
