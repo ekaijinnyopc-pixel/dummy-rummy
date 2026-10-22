@@ -1,5 +1,5 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v30
+// 🃏 DUMMY RUMMY — game-core.js v33
 // - hotfix: เปลี่ยน select('*') → explicit columns เพื่อหลีก schema cache 406 error
 // - รอพี่เอรัน SQL schema เพิ่ม column
 // ============================================================
@@ -1289,16 +1289,17 @@ function opponentCardHtml(pid, game, players) {
   var isActive = game.turnPlayerId === pid;
   var p = players[pid] || {};
   var melds = game.melds && game.melds[pid] ? game.melds[pid] : [];
+  // NOTE: ไพ่ที่เกิดแล้วแสดงในแถบโซนสีน้ำเงิน (renderOpponentMeldZone) แล้ว
+  // การ์ดผู้เล่นจึงแสดงแค่จำนวนชุด ไม่ซ้ำชุดไพ่ (ตามต้นแบบ GAMEINDY)
   var meldChips = '';
-  for (var mi = 0; mi < melds.length; mi++) {
-    var meldCodes = Array.isArray(melds[mi]) ? melds[mi] : (melds[mi].cards || []);
-    var meldName = detectMeldType(meldCodes);
-    var cardsHtml = '';
-    for (var ci = 0; ci < meldCodes.length; ci++) {
-      var c = codeToCard(meldCodes[ci]);
-      if (c) cardsHtml += '<div class="mini-card ' + handCardClass(c) + '" style="width:22px;height:30px;font-size:0.5rem;gap:0;flex-shrink:0">' + c.rank + '<br>' + c.suit + '</div>';
+  if (melds.length > 0) {
+    var typeNames = [];
+    for (var mi = 0; mi < melds.length; mi++) {
+      var meldCodes = Array.isArray(melds[mi]) ? melds[mi] : (melds[mi].cards || []);
+      typeNames.push(detectMeldType(meldCodes));
     }
-    meldChips += '<div class="meld-chip" style="display:flex;align-items:center;gap:2px;flex-wrap:nowrap;overflow:hidden">' + cardsHtml + ' <span style="font-size:0.6rem;white-space:nowrap"> ' + meldName + '</span></div>';
+    meldChips = '<div class="omeld-list"><div class="meld-chip" style="justify-content:center">' +
+      '<span style="font-size:0.68rem;white-space:nowrap">เกิด ' + melds.length + ' ชุด (' + typeNames.join(', ') + ')</span></div></div>';
   }
   var activeLabel = isActive ? '<span class="oactive">▶ ตาคนี้</span>' : '';
   var av = avatarFor(pid);
@@ -1612,7 +1613,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v30 Loaded!');
+  console.log('[DummyRummy] v33 Loaded!');
   // Cleanup: delete ONLY empty lobby rooms older than 1 hour — safe for active rooms
   if (db) {
     (async function() {
