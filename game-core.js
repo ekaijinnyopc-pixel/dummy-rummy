@@ -361,12 +361,33 @@ function showScreen(id) {
 function delay(ms) { return new Promise(function(r){ setTimeout(r, ms); }); }
 
 // --- PLAYER TURN TIMER: 120s total, resets on any action ---
+var TIMER_MAX = 120;
+var TIMER_CIRC = 119.4; // 2*PI*19
+
+function updateTimerRing() {
+  try {
+    var ring = document.getElementById('timer-ring');
+    var arc = document.getElementById('timer-arc');
+    var txt = document.getElementById('timer-text');
+    if (!ring || !arc || !txt) return;
+    var left = Math.max(0, playerTimeLeft);
+    // เต็มวง = เวลาเต็ม, ว่าง = หมดเวลา
+    arc.style.strokeDashoffset = String(TIMER_CIRC * (1 - (left / TIMER_MAX)));
+    txt.textContent = left > 0 ? String(left) : '0';
+    ring.classList.remove('warn', 'crit');
+    if (left <= 10) ring.classList.add('crit');
+    else if (left <= 30) ring.classList.add('warn');
+  } catch(e) {}
+}
+
 function startPlayerTimer() {
   stopPlayerTimer();
-  playerTimeLeft = 120;
+  playerTimeLeft = TIMER_MAX;
+  updateTimerRing();
   turnTimerInterval = setInterval(function() {
     if (modalOpen) return; // pause while modal open
     playerTimeLeft--;
+    updateTimerRing();
     var ti = document.getElementById('turn-indicator');
     if (ti && myTurn) {
       ti.textContent = '🎯 ตาของคุณ! ⏱ ' + playerTimeLeft + 's';
@@ -382,6 +403,10 @@ function startPlayerTimer() {
 
 function stopPlayerTimer() {
   if (turnTimerInterval) { clearInterval(turnTimerInterval); turnTimerInterval = null; }
+  var txt = document.getElementById('timer-text');
+  var arc = document.getElementById('timer-arc');
+  if (txt) txt.textContent = '--';
+  if (arc) arc.style.strokeDashoffset = String(TIMER_CIRC);
 }
 
 function resetPlayerTimer() {
@@ -1181,7 +1206,7 @@ async function renderGame(game) {
     var ri = document.getElementById('round-info');
     if (ri) ri.textContent = 'รอบ: ' + (game.round || 1) + ' | ทิ้ง: ' + (game.discardPile ? game.discardPile.length : 0);
     var dc = document.getElementById('deck-count');
-    if (dc) dc.textContent = (game.deck ? game.deck.length : 0) + ' ใบ' + (game.deckEmpty ? ' 🔻หมด' : '');
+    if (dc) dc.textContent = (game.deck ? game.deck.length : 0) + (game.deckEmpty ? ' 🔻หมด' : '');
     var yn = document.getElementById('your-name');
     if (yn) yn.textContent = myName;
     await renderOpponents(game);
@@ -1208,7 +1233,35 @@ async function renderOpponents(game) {
     var botRow = document.getElementById('row-opponents-bottom');
     if (topRow) topRow.innerHTML = top.map(function(pid){ return opponentCardHtml(pid, game, players); }).join('');
     if (botRow) botRow.innerHTML = bot.map(function(pid){ return opponentCardHtml(pid, game, players); }).join('');
+    renderOpponentMeldZone(game, players);
   } catch(e) { console.error('renderOpponents error:', e); }
+}
+
+// โซนชุดไพ่ของคู่แข่ง (แถบน้ำเงิน) — รวมชุดไพ่ของทุกคนที่ไม่ใช่เรา
+function renderOpponentMeldZone(game, players) {
+  try {
+    var zone = document.getElementById('opponent-melds');
+    if (!zone) return;
+    var html = '';
+    var any = false;
+    for (var pid in (game.melds || {})) {
+      if (pid === myPlayerId) continue;
+      var melds = game.melds[pid] || [];
+      for (var mi = 0; mi < melds.length; mi++) {
+        any = true;
+        var meldCodes = Array.isArray(melds[mi]) ? melds[mi] : (melds[mi].cards || []);
+        var setHtml = '<div class="meld-set-display">';
+        for (var ci = 0; ci < meldCodes.length; ci++) {
+          var c = codeToCard(meldCodes[ci]);
+          if (c) setHtml += '<div class="ms-card ' + handCardClass(c) + '">' + c.rank + '<br>' + c.suit + '</div>';
+        }
+        setHtml += '</div>';
+        var p = players[pid] || {};
+        html += setHtml + '<span class="mz-empty" style="align-self:center">' + (p.isBot ? '🤖 ' : '') + (p.name || '??') + '</span>';
+      }
+    }
+    zone.innerHTML = any ? html : '<span class="mz-empty">ยังไม่มีผู้เล่นเกิดชุดไพ่</span>';
+  } catch(e) { console.error('renderOpponentMeldZone error:', e); }
 }
 
 function opponentCardHtml(pid, game, players) {
@@ -1240,13 +1293,17 @@ function renderDiscardPile(game) {
     var pile = document.getElementById('discard-pile');
     var discard = game.discardPile || [];
     if (!pile) return;
-    if (discard.length === 0) { pile.innerHTML = '<span style="color:#555;font-size:0.8rem">ว่าง</span>'; return; }
+    var badge = document.getElementById('discard-count');
+    if (badge) badge.textContent = discard.length;
+    if (discard.length === 0) { pile.innerHTML = '<span style="color:#bbb;font-size:0.8rem">ว่าง</span>'; return; }
     var html = '';
     for (var i = 0; i < discard.length; i++) {
       var card = codeToCard(discard[i]);
       if (!card) continue;
       var cls = handCardClass(card);
-      html += '<div class="dp-card ' + cls + '" onclick="pickFromDiscard(' + i + ')" style="cursor:pointer;flex-shrink:0" title="หยิบใบนี้และทุกใบที่อยู่บน">' + card.rank + '<br>' + card.suit + '</div>';
+      // ใบบนสุด (ใบล่าสุด) ไฮไลต์สีเหลือง = ใบที่หยิบได้
+      var latest = (i === discard.length - 1) ? ' latest' : '';
+      html += '<div class="dp-card ' + cls + latest + '" onclick="pickFromDiscard(' + i + ')" style="cursor:pointer;flex-shrink:0" title="หยิบใบนี้และทุกใบที่อยู่บน">' + card.rank + '<br>' + card.suit + '</div>';
     }
     pile.innerHTML = html;
   } catch(e) { console.error('renderDiscardPile error:', e); }
@@ -1309,10 +1366,20 @@ async function renderScoreboard(game) {
       var isYou = pid === myPlayerId;
       var pts = scores[pid] || 0;
       var meldCount = (game.melds && game.melds[pid]) ? game.melds[pid].length : 0;
+      var crown = '';
+      // ผู้นำอันดับ 1 มีมงกุฎ
+      var best = null;
+      for (var bi = 0; bi < game.playerOrder.length; bi++) {
+        var bp = game.playerOrder[bi];
+        var bs = scores[bp] || 0;
+        if (best === null || bs > best) best = bs;
+      }
+      if (best !== null && pts === best && pts > 0) crown = '<span class="crown">👑</span>';
       html += '<div class="score-item' + (isYou ? ' highlight' : '') + '">' +
-        '<div class="sname">' + (p.isBot ? '🤖 ' : '') + (p.name || '??') + '</div>' +
-        '<div class="spoint" style="color:' + (isYou ? '#ffd700' : '#fff') + '">' + (pts > 0 ? '+' : '') + pts + '</div>' +
-        '<div style="font-size:0.7rem;color:#888">เกิด ' + meldCount + '</div></div>';
+        '<div class="sname">' + (p.isBot ? '🤖 ' : '') + (p.name || '??') + crown + '</div>' +
+        '<div class="spoint" style="color:' + (isYou ? '#ffd700' : (pts >= 0 ? '#fff' : '#ff8a80')) + '">' +
+        (pts > 0 ? '+' : '') + pts + '<span class="unit">P</span></div>' +
+        '<div style="font-size:0.7rem;color:#bbb">เกิด ' + meldCount + '</div></div>';
     }
     row.innerHTML = html;
   } catch(e) { console.error('renderScoreboard error:', e); }
