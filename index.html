@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;600;700&family=Noto+Color+Emoji&display=swap" rel="stylesheet">
 <title>🃏 ดัมมี่ 7 ใบ</title>
 <style>
 :root {
@@ -19,7 +19,8 @@
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: 'Noto Sans Thai', 'Leelawadee UI', 'Tahoma', 'Segoe UI', sans-serif;
+  font-family: 'Noto Sans Thai', 'Noto Color Emoji', 'Segoe UI Emoji', 'Apple Color Emoji',
+               'Segoe UI Symbol', 'DejaVu Sans', 'Tahoma', 'Segoe UI', sans-serif;
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
@@ -236,7 +237,8 @@ body {
 .deck-stack .card:nth-child(1) { top: 8px; opacity: 0.3; }
 .deck-stack .card:nth-child(2) { top: 4px; opacity: 0.6; }
 .deck-stack .card:nth-child(3) { top: 0; }
-.deck-count { color: #888; font-size: 0.8rem; margin-top: 6px; }
+.deck-count { color: #ddd; font-size: 0.85rem; margin-top: 6px; display: flex; align-items: center; gap: 6px; justify-content: center; }
+.deck-count .pile-badge { font-size: .9rem; padding: 2px 11px; }
 
 .discard-area {
   text-align: center;
