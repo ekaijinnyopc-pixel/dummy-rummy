@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OAuth Helper — GAMEINDY Dummy</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<style>
+ body{font-family:system-ui,'Noto Sans Thai',sans-serif;background:#0f2b1d;color:#eaf6ee;padding:24px;max-width:760px;margin:auto}
+ h1{font-size:20px}
+ button{font-size:18px;padding:14px 22px;border-radius:10px;border:0;background:#e94560;color:#fff;cursor:pointer}
+ pre{background:#08170f;border:1px solid #2c5c44;border-radius:8px;padding:12px;white-space:pre-wrap;word-break:break-all;font-size:12px;max-height:340px;overflow:auto}
+ .ok{color:#7ee787}.err{color:#ff8a80}
+</style>
+</head>
+<body>
+<h1>🔐 ตัวช่วย OAuth (Firebase · dummy-26669300)</h1>
+<p>กดปุ่มด้านล่าง → เลือกบัญชี Google → อนุญาต → คัดลอกค่า <b>ID_TOKEN</b> ส่งกลับมาให้จิน<br>
+(ไม่มีการเก็บรหัสผ่าน — โทเค็นนี้ใช้ได้ ~1 ชั่วโมง)</p>
+<button id="go">🔑 ล็อกอินด้วย Google</button>
+<p id="status">…</p>
+<pre id="out"></pre>
+<script>
+var CFG={apiKey:"AIzaSyA17JlDTYgpIjhoQl8np_axWOxqOCh-BXA",authDomain:"dummy-26669300.firebaseapp.com",projectId:"dummy-26669300"};
+firebase.initializeApp(CFG);
+var out=document.getElementById('out'),st=document.getElementById('status');
+document.getElementById('go').onclick=function(){
+ st.textContent='กำลังเปิดหน้าล็อกอิน…';out.textContent='';
+ firebase.auth().signInWithPopup(new firebase.auth.GoogleAuthProvider()).then(function(c){
+   return c.user.getIdToken().then(function(t){
+     st.innerHTML='<span class="ok">✅ สำเร็จ</span>';
+     out.textContent='ID_TOKEN='+t+'\n\nUID='+c.user.uid+'\n\nREFRESH_TOKEN='+(c.user.refreshToken||'');
+   });
+ }).catch(function(e){
+   st.innerHTML='<span class="err">❌ '+e.message+'</span>';
+   out.textContent=String(e)+'\n'+(e.customData||'');
+ });
+};
+</script>
+</body>
+</html>
