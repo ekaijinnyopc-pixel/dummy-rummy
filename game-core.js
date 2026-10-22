@@ -1208,7 +1208,7 @@ async function renderGame(game) {
     var dc = document.getElementById('deck-count');
     if (dc) dc.textContent = (game.deck ? game.deck.length : 0) + (game.deckEmpty ? ' 🔻หมด' : '');
     var yn = document.getElementById('your-name');
-    if (yn) yn.textContent = myName;
+    if (yn) yn.innerHTML = '<span class="av">' + avatarFor(myPlayerId).e + '</span>' + myName;
     await renderOpponents(game);
     renderDiscardPile(game);
     renderYourHand();
@@ -1264,8 +1264,27 @@ function renderOpponentMeldZone(game, players) {
   } catch(e) { console.error('renderOpponentMeldZone error:', e); }
 }
 
+// --- AVATAR: สัตว์น่ารัก ใช้ emoji ของเราเอง (ไม่ใช้ asset ของเกมอื่น) ---
+var AVATARS = [
+  { e: '🦌', n: 'แกะ' }, { e: '🐱', n: 'แมว' }, { e: '🐮', n: 'โค' },
+  { e: '🐰', n: 'กระต่าย' }, { e: '🐶', n: 'สุนัข' }, { e: '🐻', n: 'หมี' },
+  { e: '🐷', n: 'หมู' }, { e: '🐔', n: 'ไก่' }, { e: '🐸', n: 'กบ' },
+  { e: '🦊', n: 'สุนัขจิ้งจอก' }, { e: '🐼', n: 'แพนด้า' }, { e: '🐯', n: 'เสือ' }
+];
+function avatarFor(pid) {
+  if (!pid) return AVATARS[0];
+  var h = 0;
+  for (var i = 0; i < pid.length; i++) { h = ((h << 5) - h + pid.charCodeAt(i)) | 0; }
+  return AVATARS[Math.abs(h) % AVATARS.length];
+}
+function starsFor(n) {
+  var s = '';
+  for (var i = 0; i < Math.min(3, n); i++) s += '⭐';
+  return s;
+}
+
 function opponentCardHtml(pid, game, players) {
-  if (!pid) return '<div class="opponent-card" style="opacity:0.2"><div class="oheader"><span class="oemoji">❌</span><span class="oname">ไม่มี</span></div><div class="ocard-mini"><span style="color:#555;font-size:0.75rem">ไม่มีผู้เล่น</span></div></div>';
+  if (!pid) return '<div class="opponent-card" style="opacity:0.2"><div class="oheader"><span class="oemoji">❌</span><span class="oname">ไม่มี</span></div><div class="ocard-mini"><span style="color:#bbb;font-size:0.75rem">ไม่มีผู้เล่น</span></div></div>';
   var handSize = game.hands && game.hands[pid] ? game.hands[pid].length : 0;
   var isActive = game.turnPlayerId === pid;
   var p = players[pid] || {};
@@ -1282,9 +1301,11 @@ function opponentCardHtml(pid, game, players) {
     meldChips += '<div class="meld-chip" style="display:flex;align-items:center;gap:2px;flex-wrap:nowrap;overflow:hidden">' + cardsHtml + ' <span style="font-size:0.6rem;white-space:nowrap"> ' + meldName + '</span></div>';
   }
   var activeLabel = isActive ? '<span class="oactive">▶ ตาคนี้</span>' : '';
+  var av = avatarFor(pid);
+  var starHtml = melds.length ? '<span class="ostars">' + starsFor(melds.length) + '</span>' : '';
   return '<div class="opponent-card' + (isActive ? ' active-turn' : '') + '">' +
-    '<div class="oheader"><span class="oemoji">' + (p.isBot ? '🤖' : '👤') + '</span><span class="oname">' + (p.name || '??') + '</span>' + activeLabel + '</div>' +
-    '<div style="text-align:center;padding:8px 0"><div style="font-size:2rem;font-weight:700;color:var(--gold)">' + handSize + '</div><div style="font-size:0.75rem;color:#888">ใบ</div></div>' +
+    '<div class="oheader"><span class="oemoji">' + av.e + '</span><span class="oname">' + (p.name || '??') + '</span>' + starHtml + activeLabel + '</div>' +
+    '<div style="text-align:center;padding:8px 0"><div style="font-size:2rem;font-weight:700;color:var(--gold)">' + handSize + '</div><div style="font-size:0.75rem;color:#bbb">ใบ</div></div>' +
     (meldChips ? '<div class="omeld-list">' + meldChips + '</div>' : '') + '</div>';
 }
 
@@ -1376,7 +1397,7 @@ async function renderScoreboard(game) {
       }
       if (best !== null && pts === best && pts > 0) crown = '<span class="crown">👑</span>';
       html += '<div class="score-item' + (isYou ? ' highlight' : '') + '">' +
-        '<div class="sname">' + (p.isBot ? '🤖 ' : '') + (p.name || '??') + crown + '</div>' +
+        '<div class="sname"><span class="av">' + avatarFor(pid).e + '</span>' + (p.isBot ? '🤖 ' : '') + (p.name || '??') + crown + '</div>' +
         '<div class="spoint" style="color:' + (isYou ? '#ffd700' : (pts >= 0 ? '#fff' : '#ff8a80')) + '">' +
         (pts > 0 ? '+' : '') + pts + '<span class="unit">P</span></div>' +
         '<div style="font-size:0.7rem;color:#bbb">เกิด ' + meldCount + '</div></div>';
