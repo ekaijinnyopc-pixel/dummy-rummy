@@ -478,11 +478,44 @@ async function returnPickedCardsFor(pid) {
   } catch(e) { console.error('returnPickedCardsFor error:', e); return false; }
 }
 
+// ธงหยิบใน DB "ค้างเปล่า"? (ไพ่ที่หยิบไม่อยู่บนมือแล้ว = เกิดไปแล้ว หรือ state เพี้ยน)
+// ถ้าค้าง → ต้องล้าง ไม่งั้น (ถ้าพี่เอรัน SQL fix ทีหลัง) server จะบล็อกการทิ้งไพ่
+// ด้วย MUST_MELD_PICKED ตลอดไป → ผู้เล่นเล่นต่อไม่ได้
+function hasStalePickedFlag(pid) {
+  try {
+    var g = window._currentGame || currentGame;
+    if (!g) return false;
+    var flags = (g.pickedFromDiscard && g.pickedFromDiscard[pid]) || [];
+    if (!flags.length) return false;
+    var hand = (g.hands && g.hands[pid]) || [];
+    for (var i = 0; i < flags.length; i++) {
+      if (hand.indexOf(flags[i]) < 0) return true;
+    }
+    return false;
+  } catch(e) { return false; }
+}
+
+var _cleaningStaleFlag = false;
+async function autoCleanStalePickedFlag() {
+  if (_cleaningStaleFlag) return;
+  if (!hasStalePickedFlag(myPlayerId)) return;
+  _cleaningStaleFlag = true;
+  try {
+    console.warn('[PICK] พบธงหยิบค้าง (ไพ่ไม่อยู่บนมือ) → ล้างให้อัตโนมัติ');
+    await clearPickedFlag(myPlayerId);
+  } catch(e) { /* ignore */ }
+  _cleaningStaleFlag = false;
+}
+
 async function returnPickedCards() {
   try {
     var pid = myPlayerId;
     var taken = myPickedCodes();
-    if (taken.length === 0) { pendingPickedCodes = []; closeMeldModal(); renderYourHand(); updateActionBtns(); return; }
+    if (taken.length === 0) {
+      // ไม่มีไพ่ที่หยิบอยู่บนมือ → ถ้าธงใน DB ค้างอยู่ให้ล้างทิ้ง
+      if (hasStalePickedFlag(pid)) { await clearPickedFlag(pid); }
+      pendingPickedCodes = []; closeMeldModal(); renderYourHand(); updateActionBtns(); return;
+    }
     var ok = await returnPickedCardsFor(pid);
     if (!ok) { notify('❌ คืนไพ่ไม่สำเร็จ ลองใหม่'); return; }
     pendingPickedCodes = [];
@@ -1452,6 +1485,9 @@ async function renderGame(game) {
     renderScoreboard(game);
     updateLayoffTargets();
     updateActionBtns();
+    // FIX v36.2: ถ้าธงหยิบค้าง (ไพ่ไม่อยู่บนมือ) → ล้างอัตโนมัติ
+    // (กัน server บล็อกทิ้งไพ่ถาวรด้วย MUST_MELD_PICKED เมื่อพี่เอรัน SQL fix)
+    try { autoCleanStalePickedFlag(); } catch(e) {}
   } catch(e) { console.error('renderGame error:', e); }
 }
 
