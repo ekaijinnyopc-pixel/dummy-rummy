@@ -153,13 +153,58 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 4px;
+  gap: 10px;
+  padding: 8px 10px;
   background: var(--card-bg);
   border-radius: 12px;
   margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.gh-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.gh-right { display: flex; align-items: center; gap: 8px; }
+.gh-scores { flex: 1 1 auto; justify-content: center; }
+.gh-scores .score-item { min-width: 0; padding: 3px 9px; }
+.gh-scores .score-item .sname { max-width: 64px; font-size: .68rem; }
+.gh-scores .score-item .spoint { font-size: .95rem; }
+.gh-roomcode {
+  font-size: .78rem; color: var(--gold); font-weight: 700;
+  background: rgba(0,0,0,.35); border: 1px solid rgba(212,175,55,.3);
+  border-radius: 999px; padding: 3px 11px; white-space: nowrap;
 }
 .turn-indicator { font-weight: 700; color: var(--gold); font-size: 1rem; }
 .round-info { color: #aaa; font-size: 0.85rem; }
+
+/* FIX v46: กล่องคู่แข่ง 3 กล่องแยก (คนละกล่อง) ตาม layout ใหม่ */
+.opponents-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.opp-box {
+  background: rgba(31,79,143,.4);
+  border: 1px solid rgba(120,170,255,.35);
+  border-radius: 14px;
+  padding: 8px 10px;
+  min-height: 92px;
+  display: flex; flex-direction: column; gap: 6px;
+  overflow: hidden;
+}
+.opp-box.active-turn { border-color: #ffd700; box-shadow: 0 0 14px rgba(255,215,0,.35); }
+.opp-box .opp-head { display: flex; align-items: center; gap: 6px; }
+.opp-box .opp-avatar {
+  width: 26px; height: 26px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,.14); border: 1px solid rgba(212,175,55,.45);
+  font-size: .95rem; flex: 0 0 auto;
+}
+.opp-box .opp-name { font-weight: 600; font-size: .8rem; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opp-box .opp-count { font-size: .72rem; color: #bbb; }
+.opp-box .opp-count b { color: var(--gold); font-size: .95rem; }
+.opp-box .opp-active { color: #ffd700; font-size: .68rem; }
+.opp-box .opp-melds { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
+.opp-box .opp-melds .meld-set-display { background: rgba(255,255,255,.08); border-radius: 8px; padding: 4px 6px; display: flex; }
+.opp-box .opp-melds .ms-card { width: 26px; height: 36px; font-size: .5rem; }
+.opp-box .opp-empty { color: rgba(255,255,255,.4); font-size: .72rem; }
 
 /* Opponent card */
 .opponent-card {
@@ -564,6 +609,12 @@ body {
   .game-row1, .game-row2, .game-row3 { gap: 6px; }
   .opponent-card { padding: 8px; }
   .score-row { flex-wrap: wrap; }
+  /* FIX v46: กล่องคู่แข่ง 3 กล่องบนมือถือ → เรียงลงเป็นแถวเดียว ให้ไพ่ไม่ถูกบีบ */
+  .opponents-grid { grid-template-columns: 1fr; gap: 6px; }
+  .opp-box { min-height: 0; padding: 6px 8px; }
+  .opp-box .opp-melds .ms-card { width: 22px; height: 30px; font-size: .45rem; }
+  .gh-scores { order: 3; width: 100%; }
+  .gh-roomcode { font-size: .72rem; }
 }
 
 /* ============================================================
@@ -690,6 +741,18 @@ body {
     <p>เล่นออนไลน์ real-time กับเพื่อนและ AI</p>
   </div>
 
+  <!-- FIX v46: ห้องที่กำลังเล่น — กลับเข้าห้องเดิมได้หลังเน็ตหลุด/refresh -->
+  <div class="form-card" id="active-room-card" style="display:none">
+    <h3>🎯 ห้องที่คุณอยู่</h3>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:1.4rem;font-weight:800;letter-spacing:3px;color:var(--gold)" id="active-room-code">------</div>
+        <div style="font-size:.8rem;color:#999;margin-top:2px" id="active-room-status">กำลังตรวจสอบ...</div>
+      </div>
+      <button class="btn btn-primary" onclick="rejoinActiveRoom()" id="btn-rejoin-active">🔄 กลับเข้าห้อง</button>
+    </div>
+  </div>
+
   <div class="form-card">
     <h3>➕ สร้างห้องใหม่</h3>
     <div class="form-row">
@@ -763,35 +826,30 @@ body {
 <div id="game-screen" class="screen">
   <!-- Header -->
   <div class="game-header">
-    <span class="turn-indicator" id="turn-indicator">รอเกมเริ่ม...</span>
-    <span class="round-info" id="round-info">รอบ: -</span>
-    <div class="timer-ring" id="timer-ring" title="เวลาที่เหลือในตาของคุณ">
-      <svg viewBox="0 0 40 40">
-        <circle class="tr-bg" cx="20" cy="20" r="19"></circle>
-        <circle class="tr-fg" id="timer-arc" cx="20" cy="20" r="19"></circle>
-      </svg>
-      <span id="timer-text">--</span>
+    <div class="gh-left">
+      <span class="turn-indicator" id="turn-indicator">รอเกมเริ่ม...</span>
+      <span class="round-info" id="round-info">รอบ: -</span>
+      <div class="timer-ring" id="timer-ring" title="เวลาที่เหลือในตาของคุณ">
+        <svg viewBox="0 0 40 40">
+          <circle class="tr-bg" cx="20" cy="20" r="19"></circle>
+          <circle class="tr-fg" id="timer-arc" cx="20" cy="20" r="19"></circle>
+        </svg>
+        <span id="timer-text">--</span>
+      </div>
     </div>
-    <button class="btn btn-secondary" onclick="leaveRoom()" style="padding:6px 14px;font-size:0.85rem">← ออก</button>
+    <!-- FIX v46: ย้ายคะแนน P1–P4 ขึ้นมาอยู่ใน header -->
+    <div class="score-row gh-scores" id="score-row"></div>
+    <div class="gh-right">
+      <span class="gh-roomcode">ห้อง <span id="game-room-code">------</span></span>
+      <button class="btn btn-secondary" onclick="leaveRoom()" style="padding:6px 14px;font-size:0.85rem">← ออก</button>
+    </div>
   </div>
 
-  <!-- ROW 1: Top opponents (position 1 & 2) -->
-  <div class="game-row1" id="row-opponents-top"></div>
-
-  <!-- MELD ZONE: คู่แข่ง (แถบน้ำเงิน) -->
-  <div class="meld-zone opponent-zone">
-    <span class="mz-label">💙 ชุดไพ่ของคู่แข่ง</span>
-    <div class="mz-cards" id="opponent-melds"></div>
-  </div>
+  <!-- FIX v46: กล่องคู่แข่ง 3 กล่องแยก (คนละกล่อง) + ชุดไพ่ของแต่ละคน -->
+  <div class="opponents-grid" id="opponents-grid"></div>
 
   <!-- ROW 2: Center (Draw + Discard) -->
   <div class="game-row2">
-    <div class="discard-area">
-      <div class="deck-label">🗑️ กองทิ้ง <span class="pile-badge" id="discard-count">0</span></div>
-      <div class="discard-pile-cards" id="discard-pile"></div>
-      <div class="deck-label" style="margin-top:4px;cursor:pointer" id="pick-discard-hint" onclick="pickDiscardTop()">กดที่ไพ่บนสุดเพื่อหยิบ</div>
-    </div>
-
     <div class="center-deck">
       <div class="deck-label">📦 กองจั่ว</div>
       <div class="deck-stack" id="draw-deck" onclick="drawCard()">
@@ -803,10 +861,13 @@ body {
       </div>
       <div class="deck-count">📦 <span class="pile-badge" id="deck-count">0</span></div>
     </div>
-  </div>
 
-  <!-- ROW 3: Bottom opponents (position 3 & filler) -->
-  <div class="game-row3" id="row-opponents-bottom"></div>
+    <div class="discard-area">
+      <div class="deck-label">🗑️ กองทิ้ง <span class="pile-badge" id="discard-count">0</span></div>
+      <div class="discard-pile-cards" id="discard-pile"></div>
+      <div class="deck-label" style="margin-top:4px;cursor:pointer" id="pick-discard-hint" onclick="pickDiscardTop()">กดที่ไพ่บนสุดเพื่อหยิบ</div>
+    </div>
+  </div>
 
   <!-- ROW 4: Player's hand -->
   <div class="game-row4">
@@ -828,8 +889,8 @@ body {
     <!-- Actions -->
     <div class="action-bar" id="action-bar">
       <button class="btn btn-primary" onclick="drawCard()" id="btn-draw" disabled>📦 จั่ว</button>
-      <button class="btn btn-secondary" onclick="openMeldModal()" id="btn-meld" disabled>🃏 เกิด</button>
       <button class="btn btn-secondary" onclick="returnPickedCards()" id="btn-return-picked" disabled style="display:none">↩️ คืนไพ่ที่หยิบ</button>
+      <button class="btn btn-secondary" onclick="openMeldModal()" id="btn-meld" disabled>🃏 เกิด</button>
       <button class="btn btn-warning" onclick="openLayoffModal()" id="btn-layoff" disabled style="background:#b8860b;color:#fff;display:none">💚 ฝาก</button>
       <button class="btn btn-secondary" onclick="discardSelected()" id="btn-discard" disabled>🗑️ ทิ้ง (เลือก 1 ใบ)</button>
       <button class="btn btn-primary" onclick="endTurn()" id="btn-end" disabled>✓ จบตา</button>
@@ -837,10 +898,6 @@ body {
     </div>
   </div>
 
-  <!-- Scoreboard -->
-  <div class="scoreboard">
-    <div class="score-row" id="score-row"></div>
-  </div>
 </div>
 
 <!-- ===== MELD MODAL ===== -->
@@ -901,7 +958,7 @@ body {
 
 <script src="supabase.js?v=1"></script>
 <!-- FIX v41: กติกาโทษ -100 แบบใหม่ (2.1/2.2/2.3) — pure functions (ใช้เตือน UI + ใช้เป็นต้นแบบเดียวกับ SQL) -->
-<script src="speto-rules.js?v=45"></script>
-<script src="game-core.js?v=45"></script>
+<script src="speto-rules.js?v=46"></script>
+<script src="game-core.js?v=46"></script>
 </body>
 </html>

@@ -1,7 +1,9 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v45 (FIX v42 — กู้ห้อง game=NULL + แก้ findAllSetsAndRuns)
-// - hotfix: เปลี่ยน select('*') → explicit columns เพื่อหลีก schema cache 406 error
-// - รอพี่เอรัน SQL schema เพิ่ม column
+// 🃏 DUMMY RUMMY — game-core.js v46 (FIX v46 — layout ใหม่ + localStorage กลับเข้าห้องเดิม)
+// - FIX v42 (คงไว้): กู้ห้อง game=NULL + แก้ findAllSetsAndRuns
+// - FIX v46: header รวมคะแนน P1-P4 + รหัสห้อง · กล่องคู่แข่ง 3 กล่องแยก
+//            · กองจั่วซ้าย/กองทิ้งขวา · ปุ่ม "คืนไพ่ที่หยิบ" ย้ายหน้าปุ่ม "เกิด"
+//            · localStorage เก็บห้องปัจจุบัน → หน้าแรกมีการ์ด "ห้องที่คุณอยู่" กดกลับเข้าได้
 // ============================================================
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
@@ -13,6 +15,8 @@ function initDb() {
     if (typeof window.supabase !== 'undefined') {
       db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
       console.log('[Supabase] Connected!');
+      // FIX v46: db พร้อมแล้ว → เช็คว่ามีห้องที่คุณอยู่ค้างไว้ไหม (แก้ปัญหาเน็ตหลุด)
+      setTimeout(function(){ try { refreshActiveRoomCard(); } catch(e) {} }, 400);
     } else {
       console.error('[Supabase] CDN not loaded!');
     }
@@ -402,6 +406,98 @@ function setGame(patch) { var ng = JSON.parse(JSON.stringify(currentGame)); Obje
 // ทางแก้ฝั่ง client: ตรวจพบว่า game เป็น NULL → เขียน state ล่าสุดที่เรามีกลับเข้าไป
 var lastKnownGame = null;   // snapshot ของ game ที่เคยเห็น (ใช้กู้ห้อง)
 var repairingRoom = false;
+
+// ===== FIX v46: session ฝั่ง client (localStorage) =====
+// เก็บห้อง + playerId ปัจจุบันไว้ → ถ้าเน็ตหลุด/refresh หน้าแรกจะมีการ์ด
+// "ห้องที่คุณอยู่" ให้กดกลับเข้าห้องเดิมได้ทันที (ไม่ต้องเข้าห้องใหม่)
+var SESSION_KEY = 'dummyrummy_session';
+function saveSession() {
+  try {
+    if (!roomCode || !myPlayerId) return;
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      roomCode: roomCode, playerId: myPlayerId, name: myName, at: Date.now()
+    }));
+  } catch(e) {}
+}
+function loadSession() {
+  try { var raw = localStorage.getItem(SESSION_KEY); return raw ? JSON.parse(raw) : null; }
+  catch(e) { return null; }
+}
+function clearSession() { try { localStorage.removeItem(SESSION_KEY); } catch(e) {} }
+
+// อัปเดตการ์ด "ห้องที่คุณอยู่" บนหน้าแรก (FIX v46)
+async function refreshActiveRoomCard() {
+  try {
+    var card = document.getElementById('active-room-card');
+    if (!card) return;
+    var s = loadSession();
+    if (!s || !s.roomCode) { card.style.display = 'none'; return; }
+    var codeEl = document.getElementById('active-room-code');
+    var stEl = document.getElementById('active-room-status');
+    if (codeEl) codeEl.textContent = s.roomCode;
+    card.style.display = 'block';
+    if (!db) { if (stEl) stEl.textContent = 'กำลังโหลด...'; return; }
+    var _d = await db.from('rooms').select('id,status,players,game').eq('id', s.roomCode).maybeSingle();
+    if (_d.error || !_d.data) {
+      if (stEl) stEl.textContent = '⚠️ ไม่พบห้องนี้แล้ว (อาจถูกลบ)';
+      return;
+    }
+    var room = _d.data;
+    var players = room.players || {};
+    var stillIn = !!players[s.playerId];
+    var cnt = Object.keys(players).length;
+    var statusText = room.status === 'playing' ? (room.game ? '🎮 กำลังเล่นอยู่' : '⚠️ เกมหาย (รอกู้)')
+                : room.status === 'ended' ? '🏁 เกมจบแล้ว'
+                : '🏠 อยู่ในห้องรอ';
+    if (stEl) stEl.textContent = statusText + ' · ' + cnt + ' คน' + (stillIn ? ' · คุณอยู่ในห้องนี้' : ' · คุณไม่ได้อยู่ในห้องนี้แล้ว');
+    var btn = document.getElementById('btn-rejoin-active');
+    if (btn) btn.disabled = !stillIn;
+  } catch(e) { console.warn('refreshActiveRoomCard error:', e); }
+}
+
+// กลับเข้าห้องเดิมหลังเน็ตหลุด / refresh (FIX v46)
+async function rejoinActiveRoom() {
+  try {
+    var s = loadSession();
+    if (!s || !s.roomCode) { notify('ไม่พบข้อมูลห้องที่เคยเล่น'); return; }
+    if (!db) { notify('กรุณารอสักครู่... กดอีกครั้ง'); return; }
+    var _d = await db.from('rooms').select('id,status,players,game,version,totalplayers').eq('id', s.roomCode).maybeSingle();
+    if (_d.error || !_d.data) {
+      notify('❌ ไม่พบห้องนี้แล้ว');
+      clearSession(); refreshActiveRoomCard(); return;
+    }
+    var room = _d.data;
+    var players = room.players || {};
+    if (!players[s.playerId]) {
+      notify('❌ คุณไม่ได้อยู่ในห้องนี้แล้ว');
+      clearSession(); refreshActiveRoomCard(); return;
+    }
+    roomCode = room.id;
+    myPlayerId = s.playerId;
+    myName = s.name || (players[s.playerId] && players[s.playerId].name) || 'ผู้เล่น';
+    totalPlayers = room.totalplayers || Object.keys(players).length || 4;
+    await setupRealtime(roomCode);
+    if (room.status === 'playing' && room.game) {
+      currentGame = room.game;
+      snapshotGame(room.game);
+      currentRoomVersion = room.version || 1;
+      showScreen('game-screen');
+      renderGame(room.game);
+      notify('✅ กลับเข้าห้อง ' + roomCode + ' แล้ว');
+    } else if (room.status === 'ended') {
+      showScreen('game-screen');
+      showEndGame(resolveEndGame(room));
+      notify('✅ กลับเข้าห้อง ' + roomCode + ' แล้ว');
+    } else {
+      showScreen('lobby-screen');
+      var codeEl = document.getElementById('display-room-code');
+      if (codeEl) codeEl.textContent = roomCode;
+      renderLobby(players, totalPlayers);
+      updateLobbyLevelLabel();
+      notify('✅ กลับเข้าห้อง ' + roomCode + ' แล้ว');
+    }
+  } catch(e) { console.error('rejoinActiveRoom error:', e); notify('❌ ผิดพลาด: ' + e.message); }
+}
 
 function snapshotGame(g) {
   if (!g) return;
@@ -1011,6 +1107,7 @@ async function createRoom() {
     if (_data.error) { notify('❌ สร้างห้องไม่สำเร็จ'); return; }
     showScreen('lobby-screen');
     document.getElementById('display-room-code').textContent = roomCode;
+    saveSession(); // FIX v46: จำห้องไว้ → กลับเข้าห้องเดิมได้หลังเน็ตหลุด
     await setupRealtime(roomCode);
     renderLobby(players, totalPlayers);
     updateLobbyLevelLabel();
@@ -1051,6 +1148,7 @@ async function joinRoom() {
     totalPlayers = _fresh.data.totalplayers || 4;
     showScreen('lobby-screen');
     document.getElementById('display-room-code').textContent = code;
+    saveSession(); // FIX v46: จำห้องไว้ → กลับเข้าห้องเดิมได้หลังเน็ตหลุด
     await setupRealtime(code);
     renderLobby(newPlayers, totalPlayers);
     updateLobbyLevelLabel();
@@ -1072,7 +1170,10 @@ async function leaveRoom() {
     if (realtimeChannel) { realtimeChannel.unsubscribe(); realtimeChannel = null; }
     stopPolling();
     roomCode = null; myPlayerId = null; currentGame = null; currentLobbyPlayers = null; selectedCards = []; pendingPickedCodes = []; layoffTargets = [];
+    lastKnownGame = null;
+    clearSession(); // FIX v46: ออกจากห้องแล้ว → ล้าง session (ไม่ให้การ์ดห้องค้างบนหน้าแรก)
     showScreen('home-screen');
+    try { refreshActiveRoomCard(); } catch(e) {}
   } catch(e) { console.error('leaveRoom error:', e); }
 }
 
@@ -1763,6 +1864,9 @@ async function renderGame(game) {
     }
     var ri = document.getElementById('round-info');
     if (ri) ri.textContent = 'รอบ: ' + (game.round || 1) + ' | ทิ้ง: ' + (game.discardPile ? game.discardPile.length : 0);
+    // FIX v46: แสดงรหัสห้องใน header
+    var grc = document.getElementById('game-room-code');
+    if (grc) grc.textContent = roomCode || '------';
     var dc = document.getElementById('deck-count');
     if (dc) dc.textContent = (game.deck ? game.deck.length : 0) + (game.deckEmpty ? ' 🔻หมด' : '');
     var yn = document.getElementById('your-name');
@@ -1780,25 +1884,56 @@ async function renderGame(game) {
   } catch(e) { console.error('renderGame error:', e); }
 }
 
+// FIX v46: กล่องคู่แข่ง 3 กล่องแยก (คนละกล่อง) พร้อมชุดไพ่ของแต่ละคนในกล่องของตัวเอง
 async function renderOpponents(game) {
   try {
     var _data = await db.from('rooms').select('players').eq('id', roomCode).single();
     var players = (_data.data && _data.data.players) || {};
     var order = game.playerOrder || [];
     var opponents = order.filter(function(pid){ return pid !== myPlayerId; });
-    var top = opponents.slice(0, 2);
-    while (top.length < 2) top.push(null);
-    var bot = opponents.slice(2, 3);
-    while (bot.length < 1) bot.push(null);
-    var topRow = document.getElementById('row-opponents-top');
-    var botRow = document.getElementById('row-opponents-bottom');
-    if (topRow) topRow.innerHTML = top.map(function(pid){ return opponentCardHtml(pid, game, players); }).join('');
-    if (botRow) botRow.innerHTML = bot.map(function(pid){ return opponentCardHtml(pid, game, players); }).join('');
-    renderOpponentMeldZone(game, players);
+    var grid = document.getElementById('opponents-grid');
+    if (!grid) return;
+    var html = '';
+    for (var i = 0; i < 3; i++) {
+      html += opponentBoxHtml(opponents[i] || null, game, players);
+    }
+    grid.innerHTML = html;
   } catch(e) { console.error('renderOpponents error:', e); }
 }
 
-// โซนชุดไพ่ของคู่แข่ง (แถบน้ำเงิน) — รวมชุดไพ่ของทุกคนที่ไม่ใช่เรา
+// กล่องคู่แข่ง 1 คน (FIX v46)
+function opponentBoxHtml(pid, game, players) {
+  if (!pid) {
+    return '<div class="opp-box" style="opacity:.35"><div class="opp-head">' +
+      '<span class="opp-avatar">❌</span><span class="opp-name">ไม่มีผู้เล่น</span></div>' +
+      '<div class="opp-empty">ว่าง</div></div>';
+  }
+  var p = players[pid] || {};
+  var handSize = (game.hands && game.hands[pid]) ? game.hands[pid].length : 0;
+  var isActive = game.turnPlayerId === pid;
+  var melds = (game.melds && game.melds[pid]) ? game.melds[pid] : [];
+  var av = avatarFor(pid);
+  var activeLabel = isActive ? '<span class="opp-active">▶ ตา</span>' : '';
+  // ชุดไพ่ของคนนี้อยู่ในกล่องของเขาเอง
+  var meldHtml = '';
+  for (var mi = 0; mi < melds.length; mi++) {
+    var meldCodes = Array.isArray(melds[mi]) ? melds[mi] : (melds[mi].cards || []);
+    meldHtml += '<div class="meld-set-display">';
+    for (var ci = 0; ci < meldCodes.length; ci++) {
+      var c = codeToCard(meldCodes[ci]);
+      if (c) meldHtml += '<div class="ms-card ' + handCardClass(c) + '">' + c.rank + '<br>' + c.suit + '</div>';
+    }
+    meldHtml += '</div>';
+  }
+  return '<div class="opp-box' + (isActive ? ' active-turn' : '') + '">' +
+    '<div class="opp-head"><span class="opp-avatar">' + av.e + '</span>' +
+    '<span class="opp-name">' + (p.isBot ? '🤖 ' : '') + (p.name || '??') + '</span>' + activeLabel + '</div>' +
+    '<div class="opp-count">เหลือ <b>' + handSize + '</b> ใบ' + (melds.length ? ' · เกิด ' + melds.length + ' ชุด' : '') + '</div>' +
+    '<div class="opp-melds">' + (meldHtml || '<span class="opp-empty">ยังไม่มีชุดไพ่</span>') + '</div>' +
+    '</div>';
+}
+
+// โซนชุดไพ่ของคู่แข่ง (แถบน้ำเงิน) — FIX v46: ย้ายไปอยู่ในกล่องคู่แข่งรายคนแล้ว
 function renderOpponentMeldZone(game, players) {
   try {
     var zone = document.getElementById('opponent-melds');
@@ -2301,7 +2436,9 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v45 Loaded! (FIX v42 — กู้ห้องเมื่อ game=NULL + fix findAllSetsAndRuns)');
+  console.log('[DummyRummy] v46 Loaded! (FIX v46 — layout ใหม่ + localStorage กลับเข้าห้องเดิม)');
+  // FIX v46: แสดงการ์ด "ห้องที่คุณอยู่" บนหน้าแรก (ถ้ามี session ค้าง)
+  try { refreshActiveRoomCard(); } catch(e) {}
   // Cleanup: delete ONLY empty lobby rooms older than 1 hour — safe for active rooms
   if (db) {
     (async function() {
@@ -2438,6 +2575,7 @@ async function quickPlay() {
     if (up.error) { notify('❌ สร้างห้องไม่สำเจ'); return; }
     showScreen('lobby-screen');
     document.getElementById('display-room-code').textContent = roomCode;
+    saveSession(); // FIX v46: จำห้องไว้ → กลับเข้าห้องเดิมได้หลังเน็ตหลุด
     await setupRealtime(roomCode);
     renderLobby(players, total);
     updateLobbyLevelLabel();
