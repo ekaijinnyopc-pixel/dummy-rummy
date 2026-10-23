@@ -341,6 +341,16 @@ BEGIN
       RETURN jsonb_build_object('ok', false, 'error', 'INVALID_MELD',
         'details', 'ไพ่ที่เลือกไม่ใช่ชุดที่เกิดได้ (ต้องเป็นชุดตองหรือชุดเรียง)');
     END IF;
+    -- FIX v50b (2026-10-24): กัน "ไพ่ซ้ำ" ในชุดเดียวกัน
+    --   ช่องโหว่จริงที่เจอบน live (พิสูจน์แล้ว): ส่ง ["2♠","2♠","2♠"]
+    --   → ผ่าน CARD_NOT_IN_HAND (มี 2♠ อยู่แค่ใบเดียว แต่เช็คทีละตัวก็ผ่านหมด)
+    --   → ได้ชุด 3 ใบ แต่เสียไพ่จากมือแค่ 1 ใบ → ได้เปรียบ (แต้มเกิดฟรี)
+    --   rummy_meld_type() กันเคสนี้อยู่แล้ว (is_set ต้องสำเนาไม่ซ้ำ)
+    --   → เพิ่มเช็คชัดเจนไว้เผื่อกติกาชุดเปลี่ยนไป
+    IF (SELECT count(DISTINCT x) FROM unnest(v_meld_arr) AS x) <> array_length(v_meld_arr, 1) THEN
+      RETURN jsonb_build_object('ok', false, 'error', 'DUPLICATE_CARD',
+        'details', 'ไม่สามารถใช้ไพ่ใบเดียวกันมากกว่าหนึ่งครั้งในชุดเดียวกัน');
+    END IF;
     SELECT ARRAY(SELECT u FROM unnest(v_old) AS u WHERE NOT (u = ANY(v_meld_arr))) INTO v_new_hand;
     v_melds := COALESCE(v_melds, '{}'::JSONB);
     v_melds := jsonb_set(v_melds, ARRAY[p_player_id], COALESCE(v_melds->p_player_id, '[]'::JSONB) || jsonb_build_array(to_jsonb(v_meld_arr)));
@@ -583,10 +593,15 @@ SELECT
 
 -- 3) ตรวจห้องที่เกิด "ผิด" ไปแล้วก่อนรัน patch (ถ้ามี = ต้องแก้ด้วยมือ)
 SELECT r.id AS room_id, r.status,
-       m.pid AS player_id, m2.meld_codes, rummy_meld_type(m2.meld_codes) AS actual_type
+       m.pid AS player_id, m2.meld_codes,
+       rummy_meld_type(ARRAY(SELECT jsonb_array_elements_text(m2.meld_codes))) AS actual_type
 FROM rooms r
 CROSS JOIN LATERAL jsonb_each(COALESCE(r.game->'melds','{}'::JSONB)) AS m(pid, melds)
 CROSS JOIN LATERAL jsonb_array_elements(m.melds) AS m2(meld_codes)
 WHERE r.game IS NOT NULL
-  AND rummy_meld_type(m2.meld_codes) IS NULL
+  AND (
+    rummy_meld_type(ARRAY(SELECT jsonb_array_elements_text(m2.meld_codes))) IS NULL
+    OR (SELECT count(DISTINCT x) FROM unnest(ARRAY(SELECT jsonb_array_elements_text(m2.meld_codes))) AS x)
+       <> jsonb_array_length(m2.meld_codes)
+  )
 LIMIT 20;
