@@ -268,7 +268,8 @@ BEGIN
     END IF;
     v_card_arr := v_hands->p_player_id;
     IF v_card_arr IS NULL THEN RETURN jsonb_build_object('ok', false, 'error', 'HAND_NOT_FOUND'); END IF;
-    IF jsonb_array_length(v_card_arr) != 0 THEN
+    -- FIX v39 (2026-10-23): น็อคได้ตอนเหลือ 0 หรือ 1 ใบ (ไพ่ 1 ใบที่เหลือ = นับเป็นแต้มหัก)
+    IF jsonb_array_length(v_card_arr) > 1 THEN
       RETURN jsonb_build_object('ok', false, 'error', 'HAND_NOT_EMPTY');
     END IF;
     -- คำนวณคะแนน

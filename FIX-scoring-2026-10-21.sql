@@ -4,7 +4,9 @@
 --
 -- ⚠️ FIX 2026-10-21 — บักคะแนน/จบเกม (รอพี่เอยืนยัน Option A)
 --   S1 (KNOCK)  : คำนวณแต้มตามกติกาจริง (มอลด์ - มือคู่แข่ง x2 + โบนัส 50/100 + headPoints)
---   S2 (สเปโต) : หัก 100 แต้มเมื่อหยิบหรือทิ้งสเปโต (2♣ / Q♠) → คืน mii_penalty
+--   S2 (สเปโต) : FIX v39 (2026-10-23) หัก 100 แต้มเมื่อสเปโตถูกนำไปอยู่ใน "ชุดเกิด/ฝาก" เท่านั้น
+--                  (เดิมหักตอนหยิบ/ทิ้ง → ผิดกติกา)  และผู้เสีย = คนที่ทิ้งสเปโตล่าสุด (ถ้าไม่มี → คนที่เกิด/ฝาก)
+--   S1b (KNOCK): FIX v39 อนุญาตน็อคตอนเหลือ 0 หรือ 1 ใบ (เดิมบังคับ 0 ใบ → HAND_NOT_EMPTY)
 --   S3 (จบเกม) : เพิ่ม column winner/totalScores + เขียนลง game JSONB → ทุก client เห็นผู้ชนะ
 --   ⚠️ รวม FIX 1-5 ของ 2026-10-19 ไว้ในไฟล์เดียว (run ครั้งเดียวจบ)
 --
@@ -124,6 +126,7 @@ DECLARE
   v_meld_arr      TEXT[];
   v_is_first_meld BOOLEAN;
   v_picked        JSONB;
+  v_speto_loser   TEXT;
 BEGIN
   SELECT game, version INTO v_game, v_new_version FROM rooms WHERE id = p_game_id FOR UPDATE;
   v_new_version := COALESCE(v_new_version, 0);
@@ -192,15 +195,12 @@ BEGIN
     -- FIX 4: บันทึกว่าหยิบอะไร → server บังคับให้เกิดใบที่หยิบก่อนทิ้งได้
     v_game := jsonb_set(v_game, ARRAY['pickedFromDiscard', p_player_id], v_pick);
     v_game := jsonb_set(v_game, '{hands}', v_hands);
-    -- FIX S2: ถ้าหยิบสเปโต (2♣ / Q♠) → โทษ 100 แต้ม
+    -- FIX S2 (v39): หยิบสเปโต = ยังไม่เสียแต้ม (หักตอนนำไปเกิด/ฝากเท่านั้น)
+    -- แต่จดจำ "คนที่ทิ้ง" ไว้ เผื่อผู้หยิบนำไปเกิด/ฝาก → คนทิ้งเป็นผู้เสีย 100 แต้ม
     v_mii_penalty := 0;
     FOR i IN 1..jsonb_array_length(v_pick) LOOP
       IF v_pick->>i IN ('2♣','Q♠') THEN v_mii_penalty := 100; END IF;
     END LOOP;
-    IF v_mii_penalty > 0 THEN
-      v_game := jsonb_set(v_game, ARRAY['spettoPenalty', p_player_id],
-        to_jsonb(COALESCE((v_game->'spettoPenalty'->p_player_id)::INT,0) + v_mii_penalty));
-    END IF;
     v_game := jsonb_set(v_game, '{discardPile}', to_jsonb(v_discard));
     v_game := jsonb_set(v_game, '{phase}', '"action"');
     v_game := jsonb_set(v_game, '{version}', to_jsonb(v_new_version));
@@ -227,10 +227,9 @@ BEGIN
     v_game := jsonb_set(v_game, '{discardPile}', to_jsonb(v_discard));
     -- บันทึกว่าผู้เล่นทิ้งไพ่แล้วในตานี้
     v_game := jsonb_set(v_game, ARRAY['hasDiscardedThisTurn', p_player_id], 'true');
-    -- FIX S2: ทิ้งสเปโต (2♣ / Q♠) → โทษ 100 แต้ม
+    -- FIX S2 (v39): ทิ้งสเปโต = ยังไม่เสียแต้ม → จดจำผู้ทิ้งไว้ใน game.spetoOrigin[code]
     IF p_card_code IN ('2♣','Q♠') THEN
-      v_game := jsonb_set(v_game, ARRAY['spettoPenalty', p_player_id],
-        to_jsonb(COALESCE((v_game->'spettoPenalty'->p_player_id)::INT,0) + 100));
+      v_game := jsonb_set(v_game, ARRAY['spetoOrigin', p_card_code], to_jsonb(p_player_id));
     END IF;
     v_players := ARRAY(SELECT jsonb_array_elements_text(v_game->'playerOrder'));
     v_idx := 0;
@@ -265,6 +264,17 @@ BEGIN
     v_game := jsonb_set(v_game, '{hands}', v_hands);
     v_game := jsonb_set(v_game, '{melds}', v_melds);
     v_game := jsonb_set(v_game, '{hasFirstMeld}', v_has_fm);
+    -- FIX S2 (v39): สเปโตเข้า "ชุดเกิด" → หัก 100 แต้ม
+    --   ผู้เสีย = คนที่ทิ้งสเปโตนี้มาก่อน (game.spetoOrigin) ถ้าไม่มี → คนที่เกิดเอง
+    v_game := jsonb_set(v_game, '{spettoPenalty}', COALESCE(v_game->'spettoPenalty', '{}'::JSONB));
+    FOR i IN 1..array_length(v_meld_arr, 1) LOOP
+      IF v_meld_arr[i] IN ('2♣','Q♠') THEN
+        v_speto_loser := COALESCE(v_game->'spetoOrigin'->v_meld_arr[i], p_player_id);
+        v_game := jsonb_set(v_game, ARRAY['spettoPenalty', v_speto_loser],
+          to_jsonb(COALESCE((v_game->'spettoPenalty'->v_speto_loser)::INT,0) + 100));
+        v_game := jsonb_set(v_game, ARRAY['spetoOrigin', v_meld_arr[i]], 'null');
+      END IF;
+    END LOOP;
     v_game := jsonb_set(v_game, '{version}', to_jsonb(v_new_version));
     UPDATE rooms SET game = v_game, version = v_new_version WHERE id = p_game_id;
     RETURN jsonb_build_object('ok', true, 'game', v_game, 'is_first_meld', v_is_first_meld);
@@ -294,6 +304,13 @@ BEGIN
     v_hands := jsonb_set(v_hands, ARRAY[p_player_id], to_jsonb(v_new_hand));
     v_game := jsonb_set(v_game, '{hands}', v_hands);
     v_game := jsonb_set(v_game, '{melds}', v_melds);
+    -- FIX S2 (v39): สเปโตถูก "ฝาก" ลงชุด → หัก 100 แต้ม (ผู้เสีย = คนที่ทิ้ง ถ้าไม่มี → คนที่ฝาก)
+    IF p_card_code IN ('2♣','Q♠') THEN
+      v_speto_loser := COALESCE(v_game->'spetoOrigin'->p_card_code, p_player_id);
+      v_game := jsonb_set(v_game, ARRAY['spettoPenalty', v_speto_loser],
+        to_jsonb(COALESCE((v_game->'spettoPenalty'->v_speto_loser)::INT,0) + 100));
+      v_game := jsonb_set(v_game, ARRAY['spetoOrigin', p_card_code], 'null');
+    END IF;
     v_game := jsonb_set(v_game, '{version}', to_jsonb(v_new_version));
     UPDATE rooms SET game = v_game, version = v_new_version WHERE id = p_game_id;
     RETURN jsonb_build_object('ok', true, 'game', v_game);
@@ -303,7 +320,8 @@ BEGIN
     IF v_current_pid != p_player_id THEN RETURN jsonb_build_object('ok', false, 'error', 'NOT_YOUR_TURN'); END IF;
     v_card_arr := v_hands->p_player_id;
     IF v_card_arr IS NULL THEN RETURN jsonb_build_object('ok', false, 'error', 'HAND_NOT_FOUND'); END IF;
-    IF jsonb_array_length(v_card_arr) != 0 THEN RETURN jsonb_build_object('ok', false, 'error', 'HAND_NOT_EMPTY'); END IF;
+    -- FIX S1b (v39): น็อคได้ตอนเหลือ 0 หรือ 1 ใบ (ไพ่ 1 ใบที่เหลือ = นับเป็นแต้มหัก)
+    IF jsonb_array_length(v_card_arr) > 1 THEN RETURN jsonb_build_object('ok', false, 'error', 'HAND_NOT_EMPTY'); END IF;
     v_players := ARRAY(SELECT jsonb_array_elements_text(v_game->'playerOrder'));
     v_scores := COALESCE(v_game->'scores', '{}'::JSONB);
     v_round_scores := '{}'::JSONB;
@@ -327,9 +345,9 @@ BEGIN
             END IF;
           END LOOP;
         END LOOP;
-        -- แต้มมือ (คนที่น็อค = 0, คนที่ยังไม่เกิด = x2)
-        IF v_pid != p_player_id THEN
-          v_pm := COALESCE(v_hands->v_pid, '[]'::JSONB);
+        -- แต้มมือ (v39): ผู้น็อคที่เหลือ 0 ใบ = 0 / เหลือ 1 ใบ = นับแต้มจริง · คนที่ยังไม่เกิด = x2
+        v_pm := COALESCE(v_hands->v_pid, '[]'::JSONB);
+        IF NOT (v_pid = p_player_id AND jsonb_array_length(v_pm) = 0) THEN
           FOR j IN 0..jsonb_array_length(v_pm)-1 LOOP
             v_hand_pts := v_hand_pts + rummy_card_points(v_pm->j);
           END LOOP;

@@ -96,12 +96,19 @@ function codesToCards(codes) {
 function findMelds(hand) {
   var melds = [];
   var normals = hand.filter(function(c){ return !isSpeto(c); });
+  var spetos  = hand.filter(function(c){ return isSpeto(c); });
 
-  // SETS (ตอง)
+  // SETS (ตอง) — FIX v39: สเปโตเข้าชุดกองไพ่หน้าเดียวกันได้ (2♣ → กอง 2, Q♠ → กอง Q)
+  // แต่เข้าชุดเรียง (run) ไม่ได้
   var byRank = {};
   for (var ni = 0; ni < normals.length; ni++) {
     if (!byRank[normals[ni].rank]) byRank[normals[ni].rank] = [];
     byRank[normals[ni].rank].push(normals[ni]);
+  }
+  for (var spi = 0; spi < spetos.length; spi++) {
+    var spc = spetos[spi];
+    if (!byRank[spc.rank]) byRank[spc.rank] = [];
+    byRank[spc.rank].push(spc);
   }
   for (var r in byRank) {
     if (byRank[r].length >= 3) melds.push({ type:'set', cards: byRank[r].slice() });
@@ -224,7 +231,8 @@ function findAllLayoffs(handCodes, game) {
 
       for (var hi = 0; hi < handCards.length; hi++) {
         var hCard = handCards[hi];
-        if (isSpeto(hCard)) continue; // speto can't be laid off
+        // FIX v39: สเปโตฝากได้เฉพาะลงชุดกองไพ่หน้าเดียวกัน (ตอง) เท่านั้น ห้ามฝากลงชุดเรียง
+        if (isSpeto(hCard) && meldType !== 'ตอง') continue;
 
         if (meldType === 'ตอง') {
           // Same rank as existing set
@@ -254,6 +262,104 @@ function findAllLayoffs(handCodes, game) {
     }
   }
   return results;
+}
+
+// ===== FIX v39: สูตรกลางคำนวณคะแนน (ใช้ร่วมกันทุกทาง: มนุษย์/บอท/หน้าจบเกม) =====
+function computeRoundScoresFor(game, koId) {
+  var res = { roundScores: {}, totalScores: {}, breakdown: {}, winner: null, knockBonus: 0 };
+  if (!game || !game.hands) return res;
+  var penalty = game.spettoPenalty || {};
+  var players = game.playerOrder || Object.keys(game.hands);
+  for (var i = 0; i < players.length; i++) {
+    var pid = players[i];
+    var meldPts = 0, meldCards = [];
+    var melds = (game.melds && game.melds[pid]) ? game.melds[pid] : [];
+    for (var mi = 0; mi < melds.length; mi++) {
+      var mc = Array.isArray(melds[mi]) ? melds[mi] : (melds[mi].cards || []);
+      for (var ci = 0; ci < mc.length; ci++) { var c = codeToCard(mc[ci]); if (c) { meldPts += cardPoints(c); meldCards.push(mc[ci]); } }
+    }
+    var handPts = 0, handCards = [];
+    var hc = game.hands[pid] || [];
+    for (var hi = 0; hi < hc.length; hi++) { var c2 = codeToCard(hc[hi]); if (c2) { handPts += cardPoints(c2); handCards.push(hc[hi]); } }
+    var isKo = (pid === koId);
+    var hasMeld = !!(game.hasFirstMeld && game.hasFirstMeld[pid]);
+    // ผู้น็อคที่เหลือ 0 ใบ = ไม่มีแต้มมือ / เหลือ 1 ใบ = นับเป็นแต้มมือ (×2 ถ้ายังไม่เกิดแรก)
+    if (isKo && hc.length === 0) handPts = 0;
+    if (!hasMeld) handPts = handPts * 2;
+    var bonus = 0, knockBonus = 0;
+    if (isKo) {
+      knockBonus = hasMeld ? 50 : 100;
+      bonus += knockBonus;
+      if (game.headPoints) bonus += game.headPoints;
+      res.knockBonus = knockBonus;
+    }
+    var pen = penalty[pid] || 0;
+    var round = meldPts - handPts + bonus - pen;
+    res.roundScores[pid] = round;
+    res.breakdown[pid] = {
+      meld: meldPts, meldCards: meldCards,
+      hand: handPts, handCards: handCards,
+      bonus: bonus, knockBonus: knockBonus, isKnock: isKo,
+      penalty: pen, round: round
+    };
+  }
+  var prev = game.scores || {};
+  for (var pi = 0; pi < players.length; pi++) {
+    var tpid = players[pi];
+    res.totalScores[tpid] = (prev[tpid] || 0) + (res.roundScores[tpid] || 0);
+  }
+  // ผู้ชนะ: ถ้ามีใครสะสมถึง 500 แต้ม → คนที่สะสมน้อยที่สุดชนะ
+  for (var wid in res.totalScores) {
+    if (res.totalScores[wid] >= 500) {
+      var min = Infinity, winPid = null;
+      for (var w2 in res.totalScores) { if (res.totalScores[w2] < min) { min = res.totalScores[w2]; winPid = w2; } }
+      res.winner = winPid; break;
+    }
+  }
+  return res;
+}
+
+// ===== FIX v39: จบรอบฝั่ง client (รองรับน็อคตอนเหลือไพ่ 1 ใบ ที่ server เดิมตอบ HAND_NOT_EMPTY) =====
+async function finishRoundClientSide(koId, attempt) {
+  attempt = attempt || 0;
+  try {
+    var rowRes = await db.from('rooms').select('id,code,players,game,version').eq('id', roomCode).single();
+    if (rowRes.error || !rowRes.data || !rowRes.data.game) return null;
+    var row = rowRes.data;
+    var g = row.game;
+    var rowVer = row.version || 0;
+    var ver = Math.max(rowVer, g.version || 0);
+    var calc = computeRoundScoresFor(g, koId);
+    var ng = JSON.parse(JSON.stringify(g));
+    ng.status = 'ended';
+    ng.knockPlayerId = koId;
+    ng.roundScores = calc.roundScores;
+    ng.totalScores = calc.totalScores;
+    ng.scores = calc.totalScores;   // ยอดสะสมข้ามรอบ
+    ng.winner = calc.winner;
+    ng.version = ver + 1;
+    var upd = await db.from('rooms')
+      .update({ status: 'ended', game: ng, version: ng.version })
+      .eq('id', roomCode)
+      .eq('version', rowVer)
+      .select('version');
+    if (upd.error || !upd.data || upd.data.length === 0) {
+      if (attempt < 2) { await delay(250); return finishRoundClientSide(koId, attempt + 1); }
+      console.warn('[FINISH] version conflict → resync');
+      await resyncGame();
+      return null;
+    }
+    currentGame = ng;
+    currentRoomVersion = ng.version;
+    return {
+      winner: calc.winner,
+      totalScores: calc.totalScores,
+      roundScores: calc.roundScores,
+      players: row.players || {},
+      knockId: koId,
+      knockBonus: calc.knockBonus
+    };
+  } catch(e) { console.error('finishRoundClientSide error:', e); return null; }
 }
 
 // --- GAME STATE ---
@@ -369,13 +475,11 @@ async function pickDiscardClientSide(idx, pid) {
     ng.pickedFromDiscard = ng.pickedFromDiscard || {};
     ng.pickedFromDiscard[pid] = taken;
     ng.phase = 'action';
-    // โทษสเปโต (2♣ / Q♠) ถ้าหยิบสเปโตขึ้นมา (ตรงกับ logic ใน FIX-scoring-2026-10-21.sql: หัก 100 แต้ม)
+    // FIX v37: หยิบสเปโตไม่หักแต้มทันที
+    // กติกาจริง: โทษ -100 เกิดเมื่อ "นำสเปโตไปอยู่ในชุดเกิด/ฝาก" เท่านั้น
+    // (ทิ้งสเปโตลอย ๆ โดยยังไม่มีใครเก็บไปเกิด → ยังไม่เสียแต้ม)
     var hasSpeto = taken.some(function(c){ return c === '2♣' || c === 'Q♠'; });
     var speto = hasSpeto ? 1 : 0;
-    if (speto > 0) {
-      ng.spettoPenalty = ng.spettoPenalty || {};
-      ng.spettoPenalty[pid] = (ng.spettoPenalty[pid] || 0) + 100;
-    }
     ng.version = ver + 1;
 
     var upd = await db.from('rooms')
@@ -426,6 +530,92 @@ async function clearPickedFlag(pid, attempt) {
     currentRoomVersion = ng.version;
     return true;
   } catch(e) { console.error('clearPickedFlag error:', e); return false; }
+}
+
+// ============================================================
+// FIX v39 — โทษสเปโต (2♣ / Q♠)
+// กติกา: หัก 100 แต้มเมื่อสเปโตถูก "ใช้" (นำไปเกิดในชุด หรือฝาก)
+//   - ทิ้งสเปโตลอย ๆ (ยังไม่มีใครหยิบไปใช้)  → ยังไม่เสียแต้ม
+//   - สเปโตที่ถูกทิ้ง แล้วมีคนหยิบไปเกิด        → คนที่ทิ้งเป็นผู้เสียแต้ม
+//   - สเปโตในมือตัวเองถูกนำไปเกิด/ฝาก          → คนที่นำไปใช้เป็นผู้เสียแต้ม
+// เก็บผลไว้ที่: game.spetoOrigin = { '2♣': playerId } และ game.spettoPenalty = { playerId: 100*n }
+// (client เป็นเจ้าของโทษฝั่งเดียว → ไม่หักซ้ำกับ server)
+// ============================================================
+function isSpetoCode(code) { return code === '2♣' || code === 'Q♠'; }
+
+// จดจำว่าใครเป็นคนทิ้งสเปโตใบนี้ (เผื่อมีคนหยิบไปเกิด → คนทิ้งเสียแต้ม)
+async function markSpetoDiscarded(pid, code, attempt) {
+  attempt = attempt || 0;
+  if (!isSpetoCode(code)) return false;
+  try {
+    var rowRes = await db.from('rooms').select('id,game,version').eq('id', roomCode).single();
+    if (rowRes.error || !rowRes.data || !rowRes.data.game) return false;
+    var g = rowRes.data.game;
+    var rowVer = rowRes.data.version || 0;
+    var ver = Math.max(rowVer, g.version || 0);
+    var ng = JSON.parse(JSON.stringify(g));
+    ng.spetoOrigin = ng.spetoOrigin || {};
+    ng.spetoOrigin[code] = pid;
+    ng.version = ver + 1;
+    var upd = await db.from('rooms')
+      .update({ game: ng, version: ng.version })
+      .eq('id', roomCode)
+      .eq('version', rowVer)
+      .select('version');
+    if (upd.error || !upd.data || upd.data.length === 0) {
+      if (attempt < 2) { await delay(150); return markSpetoDiscarded(pid, code, attempt + 1); }
+      await resyncGame();
+      return false;
+    }
+    currentGame = ng;
+    currentRoomVersion = ng.version;
+    return true;
+  } catch(e) { console.error('markSpetoDiscarded error:', e); return false; }
+}
+
+// หักโทษสเปโต -100 ให้ผู้ที่ "ใช้" สเปโต (เกิด/ฝาก) หรือผู้ที่ทิ้งมันไว้ให้คนอื่นหยิบไปเกิด
+async function applySpetoPenalty(pid, codes, attempt) {
+  attempt = attempt || 0;
+  var spetos = (codes || []).filter(isSpetoCode);
+  if (spetos.length === 0) return false;
+  try {
+    var rowRes = await db.from('rooms').select('id,game,version').eq('id', roomCode).single();
+    if (rowRes.error || !rowRes.data || !rowRes.data.game) return false;
+    var g = rowRes.data.game;
+    var rowVer = rowRes.data.version || 0;
+    var ver = Math.max(rowVer, g.version || 0);
+    var ng = JSON.parse(JSON.stringify(g));
+    ng.spetoOrigin = ng.spetoOrigin || {};
+    ng.spettoPenalty = ng.spettoPenalty || {};
+    var loserSet = {};
+    for (var i = 0; i < spetos.length; i++) {
+      var code = spetos[i];
+      var origin = ng.spetoOrigin[code] || null;
+      var loser = origin || pid;          // ถ้าไม่มีคนทิ้ง → คนที่นำไปใช้เสีย
+      loserSet[loser] = (loserSet[loser] || 0) + 100;
+      delete ng.spetoOrigin[code];        // กันหักซ้ำ
+    }
+    var changed = false;
+    for (var l in loserSet) {
+      ng.spettoPenalty[l] = (ng.spettoPenalty[l] || 0) + loserSet[l];
+      changed = true;
+    }
+    if (!changed) return false;
+    ng.version = ver + 1;
+    var upd = await db.from('rooms')
+      .update({ game: ng, version: ng.version })
+      .eq('id', roomCode)
+      .eq('version', rowVer)
+      .select('version');
+    if (upd.error || !upd.data || upd.data.length === 0) {
+      if (attempt < 2) { await delay(150); return applySpetoPenalty(pid, codes, attempt + 1); }
+      await resyncGame();
+      return false;
+    }
+    currentGame = ng;
+    currentRoomVersion = ng.version;
+    return true;
+  } catch(e) { console.error('applySpetoPenalty error:', e); return false; }
 }
 
 // คืนไพ่ที่หยิบกลับกองทิ้ง (กันผู้เล่นค้าง ถ้าไม่มีชุดเกิด)
@@ -900,7 +1090,7 @@ async function pickFromDiscard(idx) {
     renderDiscardPile(currentGame);
     openMeldModal(res.taken);
     if (res.speto > 0) {
-      notify('⚠️ ทิ้งมี่! -100 แต้ม');
+      notify('⚠️ หยิบสเปโต! ถ้านำไปเกิด/ฝาก ผู้ที่ทิ้งไพ่นี้จะเสีย 100 แต้ม');
     } else {
       notify('🗑️ หยิบได้แล้ว! ต้องเกิดใบที่หยิบทันที');
     }
@@ -926,8 +1116,11 @@ async function discardSelected() {
     if (!r) return;
     hasDiscardedThisTurn = true; // บันทึกว่าทิ้งแล้ว ถึงจะจบตาได้
 
-    // Check for speto notification (handled in RPC, but notify player)
-    if (isSpeto(card)) notify('⚠️ ทิ้งสเปโต! -100 แต้ม');
+    // FIX v39: จดจำว่าใครเป็นคนทิ้งสเปโต (ถ้ามีคนหยิบไปเกิด/ฝาก → คนทิ้งเสีย 100 แต้ม)
+    if (isSpeto(card)) {
+      await markSpetoDiscarded(myPlayerId, cardCode);
+      notify('⚠️ ทิ้งสเปโต! (ยังไม่เสียแต้ม — ถ้ามีคนหยิบไปเกิด คุณจะเสีย 100 แต้ม)');
+    }
 
     // Check for knockout
     if (r.game && r.game.status === 'ended') {
@@ -966,23 +1159,19 @@ async function doKnock() {
   try {
     if (!currentGame || !myTurn) return;
     var myHand = currentGame.hands[myPlayerId] || [];
-    if (myHand.length !== 0) { notify('ไพ่ต้องเหลือ 0 ใบถึงจะน็อคได้'); return; }
-    var r = await rpcPlayTurn('KNOCK');
+    // FIX v39: น็อคได้ตอนเหลือ 0 หรือ 1 ใบ (server เดิมตอบ HAND_NOT_EMPTY เมื่อเหลือ 1 ใบ)
+    if (myHand.length > 1) { notify('ไพ่ต้องเหลือไม่เกิน 1 ใบถึงจะน็อคได้'); return; }
+    if (myPickedCodes().length > 0) { notify('❌ ต้องเกิดใบที่หยิบจากกองทิ้งก่อนน็อค!'); return; }
+
+    // จบรอบฝั่ง client (เขียน rooms.status='ended' + game JSONB พร้อม optimistic lock)
+    var res = await finishRoundClientSide(myPlayerId);
+    if (!res) { notify('❌ บันทึกผลไม่สำเร็จ ลองใหม่อีกครั้ง'); return; }
     var _p = await db.from('rooms').select('players').eq('id', roomCode).single();
     var players = (_p && _p.data && _p.data.players) || {};
-    var roundScores = r && (r.round_scores || (r.game && r.game.roundScores));
-    var totalScores = r && (r.total_scores || (r.game && (r.game.totalScores || r.game.scores)));
-    var winner = r && ((r.winner !== undefined && r.winner !== null) ? r.winner : (r.game && r.game.winner));
-    if (!roundScores || Object.keys(roundScores).length === 0) {
-      // fallback: คำนณณต้อย client-side แล้วบันที่ไปที่ game JSONB
-      var calc = computeRoundScores(myPlayerId);
-      roundScores = calc.roundScores;
-      totalScores = calc.totalScores;
-      winner = calc.winner || myPlayerId;
-      await saveEndStateClientSide(winner, totalScores, roundScores);
-    }
-    if (!winner) winner = myPlayerId;
-    showEndGame({ winner: winner, totalScores: totalScores || {}, roundScores: roundScores || {}, players: players, knockId: myPlayerId });
+    showEndGame({
+      winner: res.winner, totalScores: res.totalScores || {}, roundScores: res.roundScores || {},
+      players: players, knockId: myPlayerId, breakdown: endgameBreakdown(myPlayerId)
+    });
   } catch(e) { console.error('doKnock error:', e); }
 }
 
@@ -1003,50 +1192,14 @@ async function handleKnockout(koId) {
     var _data = await db.from('rooms').select('id,code,players,game,status,version,totalplayers').eq('id', roomCode).single();
     if (!_data.data) return;
     var players = _data.data.players || {};
-    var game = currentGame;
 
-    var roundScores = {};
-    for (var pid in game.hands) {
-      var meldPts = 0;
-      var melds = game.melds && game.melds[pid] ? game.melds[pid] : [];
-      for (var mi = 0; mi < melds.length; mi++) {
-        var meldCodes = melds[mi];
-        for (var ci = 0; ci < meldCodes.length; ci++) { var c = codeToCard(meldCodes[ci]); if (c) meldPts += cardPoints(c); }
-      }
-      var handPts = 0;
-      var handCodes = game.hands[pid] || [];
-      for (var ci2 = 0; ci2 < handCodes.length; ci2++) { var c2 = codeToCard(handCodes[ci2]); if (c2) handPts += cardPoints(c2); }
-      if (pid === koId) handPts = 0;
-      var hasMeld = game.hasFirstMeld && game.hasFirstMeld[pid];
-      if (!hasMeld && pid !== koId) handPts = handPts * 2;
-      roundScores[pid] = meldPts - handPts;
-    }
-
-    var hasMeldBeforeKnock = game.hasFirstMeld && game.hasFirstMeld[koId];
-    var knockBonus = hasMeldBeforeKnock ? 50 : 100;
-    roundScores[koId] += knockBonus;
-    if (game.headPoints) roundScores[koId] += game.headPoints;
-
-    var prevScores = game.scores || {};
-    var totalScores = {};
-    for (var ti = 0; ti < game.playerOrder.length; ti++) {
-      var tpid = game.playerOrder[ti];
-      totalScores[tpid] = (prevScores[tpid] || 0) + roundScores[tpid];
-    }
-
-    var winner = null;
-    for (var wid in totalScores) {
-      if (totalScores[wid] >= 500) {
-        var min = Infinity, winPid = null;
-        for (var w2 in totalScores) { if (totalScores[w2] < min) { min = totalScores[w2]; winPid = w2; } }
-        winner = winPid; break;
-      }
-    }
-
-    // NOTE: คอลัมน์ rooms.winner / totalScores ยังไม่ถูก apply (SQL fix pending)
-    // จำนุแที่ไปที่ game JSONB ที่ไม่ต้องออบได้
-    await saveEndStateClientSide(winner, totalScores, roundScores);
-    showEndGame({ winner: winner, totalScores: totalScores, roundScores: roundScores, players: players, knockBonus: knockBonus, knockId: koId });
+    // FIX v39: ใช้สูตรกลางเดียวกันทุกทาง (รองรับผู้น็อคเหลือ 1 ใบ + โทษสเปโต)
+    var res = await finishRoundClientSide(koId);
+    if (!res) return;
+    showEndGame({
+      winner: res.winner, totalScores: res.totalScores || {}, roundScores: res.roundScores || {},
+      players: players, knockBonus: res.knockBonus, knockId: koId, breakdown: endgameBreakdown(koId)
+    });
   } catch(e) { console.error('handleKnockout error:', e); }
 }
 
@@ -1133,6 +1286,8 @@ async function botPlay(botId) {
             if (r2) {
               hand = codesToCards(currentGame.hands[botId] || []);
               handCodes = hand.map(function(c){ return c.code; });
+              // FIX v39: โทษสเปโต -100 เมื่อสเปโตถูกนำไปอยู่ในชุดเกิด
+              if (bmgCodes.some(isSpetoCode)) await applySpetoPenalty(botId, bmgCodes);
               await clearPickedFlag(botId);
             }
             await delay(300);
@@ -1163,6 +1318,9 @@ async function botPlay(botId) {
     var hasFM2 = currentGame.hasFirstMeld && currentGame.hasFirstMeld[botId];
     if (!hasFM2) {
       var vm = findMelds(hand);
+      // FIX v39: เลี่ยงการเลือกชุดที่มีสเปโต ถ้ามีชุดอื่นที่ไม่มีสเปโตให้เลือก
+      var vmNoSpeto = vm.filter(function(m){ return !m.cards.some(function(c){ return isSpetoCode(c.code); }); });
+      if (vmNoSpeto.length > 0) vm = vmNoSpeto;
       if (vm.length > 0) {
         var m0c = vm[0].cards.map(function(c){ return c.code; });
         var r = await rpcPlayTurn('MELD', { meldCodes: m0c, playerId: botId });
@@ -1186,6 +1344,8 @@ async function botPlay(botId) {
         if (r) {
           hand = codesToCards(currentGame.hands[botId] || []);
           handCodes = hand.map(function(c){ return c.code; });
+          // FIX v39: โทษสเปโต -100 เมื่อสเปโตถูกฝากลงชุด
+          if (isSpetoCode(lo.layoffCard)) await applySpetoPenalty(botId, [lo.layoffCard]);
         }
         await delay(300);
       }
@@ -1198,18 +1358,21 @@ async function botPlay(botId) {
       pCodes = pCodes.filter(function(c){ return botHand.indexOf(c) >= 0; });
       var canD = hand.filter(function(c){ return pCodes.indexOf(c.code) === -1; });
       if (canD.length === 0) canD = hand;
-      var sD = canD.filter(function(c){ return isSpeto(c); });
-      var dCard = sD.length > 0 ? sD[0] : canD[canD.length - 1];
+      // FIX v39: ไม่ทิ้งสเปโตก่อน (คนที่ทิ้งคือคนที่จะเสียแต้มถ้ามีคนเกิดมัน) → เลือกไพ่อื่นก่อน
+      var nonSpeto = canD.filter(function(c){ return !isSpeto(c); });
+      var dCard = nonSpeto.length > 0 ? nonSpeto[nonSpeto.length - 1] : canD[canD.length - 1];
 
-      if (hand.length === 1) {
-        // Knockout!
-        var kr = await rpcPlayTurn('KNOCK', { playerId: botId });
+      // FIX v39: บอทน็อคผ่าน finishRoundClientSide (รองรับเหลือ 1 ใบ / 0 ใบ — server เดิมตอบ HAND_NOT_EMPTY)
+      if (hand.length <= 1) {
+        await finishRoundClientSide(botId);
         botRunning[botId] = false;
         return;
       }
 
       var r = await rpcPlayTurn('DISCARD', { cardCode: dCard.code, playerId: botId });
       if (!r) { botRunning[botId] = false; return; }
+      // FIX v39: จดจำว่าบอททิ้งสเปโต (ถ้ามีคนหยิบไปเกิด → บอทเสีย 100 แต้ม)
+      if (isSpetoCode(dCard.code)) await markSpetoDiscarded(botId, dCard.code);
     }
 
     botRunning[botId] = false;
@@ -1317,6 +1480,8 @@ async function confirmMeld() {
     selectedCards = [];
     var r = await rpcPlayTurn('MELD', { meldCodes: meldedCodes });
     if (!r) { selectedCards = []; return; } // revert on failure
+    // FIX v39: โทษสเปโต -100 เมื่อสเปโตถูกนำไปอยู่ในชุดเกิด
+    if (meldedCodes.some(isSpetoCode)) await applySpetoPenalty(myPlayerId, meldedCodes);
     // FIX v36: server บางเวอร์ชันไม่ล้าง pickedFromDiscard → ล้างเองให้แน่ (ไม่งั้นผู้เล่นค้าง)
     await clearPickedFlag(myPlayerId);
     // FIX: transition phase to 'action' so discard btn enables immediately
@@ -1416,6 +1581,8 @@ async function selectLayoff(lt) {
       targetMeldIdx: lt.meldIndex
     });
     if (!r) return;
+    // FIX v39: โทษสเปโต -100 เมื่อสเปโตถูกฝากลงชุด
+    if (isSpetoCode(lt.layoffCard)) await applySpetoPenalty(myPlayerId, [lt.layoffCard]);
     closeLayoffModal();
     var card = codeToCard(lt.layoffCard);
     notify('💚 ฝาก ' + (card ? card.rank + card.suit : lt.layoffCard) + ' สำเร็จ!');
@@ -1713,7 +1880,9 @@ function updateActionBtns() {
     if (!currentGame) return;
 
     var myHand = currentGame.hands[myPlayerId] || [];
+    // FIX v39: น็อคได้ตอนเหลือ 0 หรือ 1 ใบ
     var isLastCard = myHand.length === 0;
+    var canKnock = myHand.length <= 1;
     var hasMeld = currentGame.hasFirstMeld && currentGame.hasFirstMeld[myPlayerId];
     var picked = myPickedCodes().length > 0;
     var btnKnock = document.getElementById('btn-knock');
@@ -1725,17 +1894,20 @@ function updateActionBtns() {
 
     if (myTurn) {
       var phase = currentGame.phase || 'draw';
-      if (btnDraw) btnDraw.disabled = phase !== 'draw' || isLastCard;
+      if (btnDraw) btnDraw.disabled = phase !== 'draw' || canKnock;
       if (btnMeld) btnMeld.disabled = false;
       // FIX: also verify the selected card is still actually in hand (not stale after a meld)
       var selCodes = selectedCards.map(function(c){ return c.code || c; });
       var myHandCodes = currentGame.hands[myPlayerId] || [];
       var selStillInHand = selectedCards.length === 1 && selCodes.length > 0 && myHandCodes.indexOf(selCodes[0]) >= 0;
-      if (btnDiscard) btnDiscard.disabled = !(selStillInHand && !picked && !isLastCard);
+      if (btnDiscard) btnDiscard.disabled = !(selStillInHand && !picked && !canKnock);
       if (btnEnd) btnEnd.disabled = !(phase === 'action' && !picked && hasDiscardedThisTurn);
-      if (btnKnock) btnKnock.style.display = isLastCard && phase === 'action' ? 'inline-block' : 'none';
+      // FIX v39: ปุ่มน็อคโผล่เมื่อเหลือ <=1 ใบ (ไม่ต้องรอ phase==='action')
+      if (btnKnock) btnKnock.style.display = (canKnock && !picked) ? 'inline-block' : 'none';
 
-      if (isLastCard) handStatus.textContent = '🔔 ไพ่หมด! กดปุ่ม 🔔 น็อค!';
+      if (canKnock) handStatus.textContent = (myHand.length === 0)
+        ? '🔔 ไพ่หมด! กดปุ่ม 🔔 น็อค!'
+        : '🔔 เหลือไพ่ 1 ใบ! กดปุ่ม 🔔 น็อค (ไพ่ใบนี้จะนับเป็นแต้มหัก)';
       else if (picked) handStatus.textContent = '⚠️ ต้องเกิดใบที่หยิบจากกองทิ้งก่อน!';
       else if (phase === 'draw') handStatus.textContent = '📦 จั่วหรือหยิบจากกองทิ้ง';
       else if (!hasDiscardedThisTurn) handStatus.textContent = '⚠️ ต้องเลือกไพ่ 1 ใบที่จะทิ้ง แล้วกดปุ่ม 🗑️ ทิ้งก่อนจบตา!';
@@ -1811,6 +1983,7 @@ function showEndGame(data) {
             '<div class="eg-pt"><span class="lbl">ไพ่บนมือ</span><span class="val ' + (b.hand > 0 ? 'neg' : 'zero') + '">' + (b.hand > 0 ? '-' + b.hand : '0') + 'P</span></div>' +
             '<div class="eg-pt"><span class="lbl">คะแนนพิเศษ</span><span class="val ' + (b.bonus > 0 ? 'pos' : 'zero') + '">' + (b.bonus > 0 ? '+' : '') + (b.bonus || 0) + 'P</span>' +
               (knock ? '<span class="eg-knock">น็อค +' + (b.knockBonus || 0) + 'P</span>' : '') + '</div>' +
+            ((b.penalty || 0) > 0 ? '<div class="eg-pt"><span class="lbl">โทษสเปโต</span><span class="val neg">-' + (b.penalty || 0) + 'P</span></div>' : '') +
             '<div class="eg-pt"><span class="lbl">คะแนนรอบนี้</span><span class="val ' + (round > 0 ? 'pos' : (round < 0 ? 'neg' : 'zero')) + '">' + (round > 0 ? '+' : '') + round + 'P</span></div>' +
             '<div class="eg-pt"><span class="lbl">คะแนนรวม</span><span class="val ' + (total > 0 ? 'pos' : (total < 0 ? 'neg' : 'zero')) + '">' + (total > 0 ? '+' : '') + total + 'P</span></div>' +
           '</div>' +
@@ -1856,43 +2029,11 @@ function egCardsHtml(codes) {
 // คำนวณรายละเอียดคะแนนรายคน (ชุด/ฝาก, ไพ่ค้างมือ, โบนัสน็อค) สำหรับหน้าสรุป
 function endgameBreakdown(knockId) {
   var game = currentGame || {};
-  var out = {};
-  if (!game.hands) return out;
+  if (!game.hands) return {};
   var ko = knockId || game.knockPlayerId || null;
-  for (var pid in game.hands) {
-    var meldPts = 0, meldCards = [];
-    var melds = (game.melds && game.melds[pid]) ? game.melds[pid] : [];
-    for (var mi = 0; mi < melds.length; mi++) {
-      var mc = Array.isArray(melds[mi]) ? melds[mi] : (melds[mi].cards || []);
-      for (var ci = 0; ci < mc.length; ci++) {
-        var c = codeToCard(mc[ci]);
-        if (c) { meldPts += cardPoints(c); meldCards.push(mc[ci]); }
-      }
-    }
-    var handPts = 0, handCards = [];
-    var hc = game.hands[pid] || [];
-    for (var ci2 = 0; ci2 < hc.length; ci2++) {
-      var c2 = codeToCard(hc[ci2]);
-      if (c2) { handPts += cardPoints(c2); handCards.push(hc[ci2]); }
-    }
-    var isKo = (pid === ko);
-    if (isKo) handPts = 0;
-    var hasMeld = game.hasFirstMeld && game.hasFirstMeld[pid];
-    if (!hasMeld && !isKo) handPts = handPts * 2;
-    var bonus = 0, knockBonus = 0;
-    if (isKo) {
-      knockBonus = hasMeld ? 50 : 100;
-      bonus += knockBonus;
-      if (game.headPoints) bonus += game.headPoints;
-    }
-    out[pid] = {
-      meld: meldPts, meldCards: meldCards,
-      hand: handPts, handCards: handCards,
-      bonus: bonus, knockBonus: knockBonus, isKnock: isKo,
-      round: meldPts - handPts + bonus
-    };
-  }
-  return out;
+  // FIX v39: ใช้สูตรกลางเดียวกับ computeRoundScoresFor (รวมโทษสเปโต + ผู้น็อคเหลือ 1 ใบ)
+  var calc = computeRoundScoresFor(game, ko);
+  return calc.breakdown || {};
 }
 
 function closeEndGame() {
@@ -1911,6 +2052,8 @@ async function playAgain() {
     var players = _data.data.players || {};
     var pids = Object.keys(players);
     if (pids.length < 2) return;
+    // FIX v39: คงยอดสะสมข้ามรอบ (เดิมรีเซ็ตทุกครั้ง → เกณฑ์ 500 แต้มใช้ไม่ได้)
+    var prevTotal = (currentGame && (currentGame.totalScores || currentGame.scores)) || {};
     var deck = shuffle(makeDeck());
     var hands = {};
     var HAND_SIZE2 = pids.length === 2 ? 11 : pids.length === 3 ? 9 : 7;
@@ -1927,6 +2070,7 @@ async function playAgain() {
       status: 'playing',
       melds: {},
       scores: {},
+      totalScores: {},
       round: (currentGame ? (currentGame.round || 1) : 1) + 1,
       turnStartTime: Date.now(),
       headCard: fc.code,
@@ -1938,7 +2082,15 @@ async function playAgain() {
       level: (currentGame && currentGame.level) || roomLevel,
       version: 1
     };
-    for (var mi = 0; mi < pids.length; mi++) { gameData.melds[pids[mi]] = []; gameData.scores[pids[mi]] = 0; gameData.hasFirstMeld[pids[mi]] = false; }
+    for (var mi = 0; mi < pids.length; mi++) {
+      gameData.melds[pids[mi]] = [];
+      gameData.scores[pids[mi]] = prevTotal[pids[mi]] || 0;   // ยอดสะสมเดิม
+      gameData.totalScores[pids[mi]] = prevTotal[pids[mi]] || 0;
+      gameData.hasFirstMeld[pids[mi]] = false;
+    }
+    // FIX v39: รีเซ็ตโทษสเปโต + ผู้ทิ้งสเปโต ตอนขึ้นรอบใหม่
+    gameData.spettoPenalty = {};
+    gameData.spetoOrigin = {};
     await db.from('rooms').update({ status: 'playing', game: gameData }).eq('id', roomCode);
     currentGame = gameData;
     selectedCards = []; pendingPickedCodes = []; layoffTargets = [];
@@ -2185,41 +2337,10 @@ function saveEndStateClientSide(winner, totalScores, roundScores) {
 // คำนณณเสลคะแนน์องเรอบ (จากอันมีเลียด้อย้วนไปตี่ game JSONB)
 function computeRoundScores(koId) {
   var game = currentGame;
-  var roundScores = {};
-  for (var pid in game.hands) {
-    var meldPts = 0;
-    var melds = (game.melds && game.melds[pid]) ? game.melds[pid] : [];
-    for (var mi = 0; mi < melds.length; mi++) {
-      var meldCodes = Array.isArray(melds[mi]) ? melds[mi] : (melds[mi].cards || []);
-      for (var ci = 0; ci < meldCodes.length; ci++) { var c = codeToCard(meldCodes[ci]); if (c) meldPts += cardPoints(c); }
-    }
-    var handPts = 0;
-    var handCodes = game.hands[pid] || [];
-    for (var ci2 = 0; ci2 < handCodes.length; ci2++) { var c2 = codeToCard(handCodes[ci2]); if (c2) handPts += cardPoints(c2); }
-    if (pid === koId) handPts = 0;
-    var hasMeld = game.hasFirstMeld && game.hasFirstMeld[pid];
-    if (!hasMeld && pid !== koId) handPts = handPts * 2;
-    roundScores[pid] = meldPts - handPts;
-  }
-  var hasMeldBeforeKnock = game.hasFirstMeld && game.hasFirstMeld[koId];
-  var knockBonus = hasMeldBeforeKnock ? 50 : 100;
-  roundScores[koId] += knockBonus;
-  if (game.headPoints) roundScores[koId] += game.headPoints;
-  var prevScores = game.scores || {};
-  var totalScores = {};
-  for (var ti = 0; ti < game.playerOrder.length; ti++) {
-    var tpid = game.playerOrder[ti];
-    totalScores[tpid] = (prevScores[tpid] || 0) + roundScores[tpid];
-  }
-  var winner = null;
-  for (var wid in totalScores) {
-    if (totalScores[wid] >= 500) {
-      var min = Infinity, winPid = null;
-      for (var w2 in totalScores) { if (totalScores[w2] < min) { min = totalScores[w2]; winPid = w2; } }
-      winner = winPid; break;
-    }
-  }
-  return { roundScores: roundScores, totalScores: totalScores, winner: winner, knockBonus: knockBonus };
+  if (!game) return { roundScores: {}, totalScores: {}, winner: null, knockBonus: 0 };
+  // FIX v39: สูตรกลาง (รวมโทษสเปโต + ผู้น็อคเหลือ 1 ใบนับเป็นแต้มหัก)
+  var calc = computeRoundScoresFor(game, koId);
+  return { roundScores: calc.roundScores, totalScores: calc.totalScores, winner: calc.winner, knockBonus: calc.knockBonus, breakdown: calc.breakdown };
 }
 
 console.log('[DummyRummy] Script parsing OK!');

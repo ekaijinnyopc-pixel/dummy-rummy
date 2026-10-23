@@ -245,7 +245,8 @@ BEGIN
     IF v_current_pid != p_player_id THEN RETURN jsonb_build_object('ok', false, 'error', 'NOT_YOUR_TURN'); END IF;
     v_card_arr := v_hands->p_player_id;
     IF v_card_arr IS NULL THEN RETURN jsonb_build_object('ok', false, 'error', 'HAND_NOT_FOUND'); END IF;
-    IF jsonb_array_length(v_card_arr) != 0 THEN RETURN jsonb_build_object('ok', false, 'error', 'HAND_NOT_EMPTY'); END IF;
+    -- FIX v39 (2026-10-23): น็อคได้ตอนเหลือ 0 หรือ 1 ใบ
+    IF jsonb_array_length(v_card_arr) > 1 THEN RETURN jsonb_build_object('ok', false, 'error', 'HAND_NOT_EMPTY'); END IF;
     v_players := ARRAY(SELECT jsonb_array_elements_text(v_game->'playerOrder'));
     v_new_scores := v_scores;
     FOR i IN 1..array_length(v_players, 1) LOOP

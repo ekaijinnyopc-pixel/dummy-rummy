@@ -133,11 +133,11 @@ BEGIN
   v_game  := jsonb_set(v_game, ARRAY['pickedFromDiscard', p_player_id], v_pick);
   v_game  := jsonb_set(v_game, '{phase}', '"action"');
 
-  -- โทษสเปโต (2♣ / Q♠) ถ้าหยิบสเปโต → -100 แต้ม (ตรงกับ FIX-scoring-2026-10-21.sql)
-  IF EXISTS (SELECT 1 FROM unnest(v_taken) t WHERE t IN ('2♣','Q♠')) THEN
-    v_game := jsonb_set(v_game, ARRAY['spettoPenalty', p_player_id],
-      to_jsonb(COALESCE((v_game->'spettoPenalty'->p_player_id)::INT,0) + 100));
-  END IF;
+  -- FIX v39 (2026-10-23): หยิบสเปโต = ยังไม่เสียแต้ม
+  --   โทษ -100 เกิดเมื่อสเปโตถูกนำไปอยู่ใน "ชุดเกิด/ฝาก" เท่านั้น (ดู FIX-scoring-2026-10-21.sql)
+  --   → ไม่หักตอนหยิบ เพื่อไม่ให้หักซ้ำกับ client
+  --   แต่จดจำ "คนที่ทิ้งสเปโต" ไว้ใน game.spetoOrigin เผื่อผู้หยิบนำไปเกิด → คนทิ้งเป็นผู้เสีย 100 แต้ม
+  --   (ถ้าสเปโตนี้ยังไม่เคยถูกทิ้ง → คนที่นำไปเกิด/ฝากเป็นผู้เสียเอง)
 
   v_new_version := (v_game->>'version')::INT + 1;
   v_game := jsonb_set(v_game, '{version}', to_jsonb(v_new_version));
