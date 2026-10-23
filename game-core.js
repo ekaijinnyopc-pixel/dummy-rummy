@@ -1,5 +1,5 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v33
+// 🃏 DUMMY RUMMY — game-core.js v44 (FIX v41.2 — กติกาโทษ -100: 2.1 ทิ้งดัมมี่ / 2.2 ตีเต็ม / 2.3 สเปโต)
 // - hotfix: เปลี่ยน select('*') → explicit columns เพื่อหลีก schema cache 406 error
 // - รอพี่เอรัน SQL schema เพิ่ม column
 // ============================================================
@@ -2203,7 +2203,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v33 Loaded!');
+  console.log('[DummyRummy] v44 Loaded! (FIX v41.2 — กติกาโทษ 2.1/2.2/2.3)');
   // Cleanup: delete ONLY empty lobby rooms older than 1 hour — safe for active rooms
   if (db) {
     (async function() {
