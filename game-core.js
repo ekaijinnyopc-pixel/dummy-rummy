@@ -1412,13 +1412,27 @@ async function pickFromDiscard(idx) {
     pendingPickedCodes = res.taken;
     renderYourHand();
     renderDiscardPile(currentGame);
-    openMeldModal(res.taken);
+    // FIX v49: ไม่เปิด modal อัตโนมัติแล้ว — แยกขั้นตอนชัดเจน
+    //   ขั้น 1: 🃏 เก็บเกิด (หยิบจากกองทิ้ง)  →  ขั้น 2: 📐 วาง (เกิดในมือ)
+    updateActionBtns();
     if (res.speto > 0) {
       notify('⚠️ หยิบสเปโต! ถ้านำไป "เกิด" ภายใน 1 รอบ ผู้ที่ทิ้งไพ่นี้จะเสีย ' + MAX_PENALTY_PER_DISCARD + ' แต้ม (ฝากไม่โดนโทษ)');
     } else {
-      notify('🗑️ หยิบได้แล้ว! ต้องเกิดใบที่หยิบทันที');
+      notify('🗑️ หยิบได้แล้ว! กด "📐 วาง" เพื่อเกิดใบที่หยิบ');
     }
   } catch(e) { console.error('pickFromDiscard error:', e); }
+}
+
+// FIX v49: หยิบไพ่บนสุดของกองทิ้ง (ปุ่ม "🃏 เก็บเกิด")
+//   index.html เรียก pickDiscardTop() อยู่แล้ว แต่ฟังก์ชันนี้ไม่เคยถูกสร้างจริง
+//   → กดแล้ว ReferenceError: pickDiscardTop is not defined
+function pickDiscardTop() {
+  try {
+    if (!currentGame || !myTurn) return;
+    var discard = currentGame.discardPile || [];
+    if (discard.length === 0) { notify('กองทิ้งว่าง'); return; }
+    pickFromDiscard(discard.length - 1);
+  } catch(e) { console.error('pickDiscardTop error:', e); }
 }
 
 async function discardSelected() {
@@ -1725,8 +1739,10 @@ function openMeldModal(pickedCodes) {
   try {
     // ถ้าไม่ได้ระบุ → ใช้ไพ่ที่หยิบค้างอยู่ (ถ้ามี) เพื่อบังคับให้เลือกชุดที่ใช้ไพ่ที่หยิบ
     var pc = (pickedCodes && pickedCodes.length > 0) ? pickedCodes : myPickedCodes();
+    var opts = getMeldOptions(pc, selectedCards);
+    window._meldOptions = opts.melds;
     document.getElementById('meld-modal').classList.add('active');
-    renderMeldOptions(pc);
+    renderMeldOptions(opts);
     document.getElementById('btn-confirm-meld').disabled = true;
   } catch(e) { console.error('openMeldModal error:', e); }
 }
@@ -1745,18 +1761,52 @@ async function onCancelMeld() {
   closeMeldModal();
 }
 
-function renderMeldOptions(pickedCodes) {
-  try {
-    var handCodes = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
-    var hand = codesToCards(handCodes);
-    var melds = findMelds(hand);
-    if (pickedCodes && pickedCodes.length > 0) {
-      melds = melds.filter(function(m){ return m.cards.some(function(c){ return pickedCodes.indexOf(c.code) >= 0; }); });
+// FIX v49: หาชุดเกิดที่ผู้เล่น "วาง" ได้ — รองรับ 3 แบบ (ชัดเจน ไม่สับสน)
+//   1) มีไพ่หยิบจากกองทิ้งค้าง → ต้องใช้ไพ่ที่หยิบอย่างน้อย 1 ใบ (กติกา server)
+//   2) ผู้เล่นเลือกไพ่ในมือเอง (selectedCards) → ใช้ชุดที่เลือกตามนั้น
+//   3) ไม่ได้เลือกอะไร → แสดงชุดที่เกิดได้ทั้งหมดในมือ
+function getMeldOptions(pickedCodes, selCodes) {
+  var handCodes = (currentGame && currentGame.hands) ? (currentGame.hands[myPlayerId] || []) : [];
+  var all = findMelds(codesToCards(handCodes));
+  var res = { melds: all, emptyReason: '' };
+
+  if (pickedCodes && pickedCodes.length > 0) {
+    // ต้องใช้ไพ่ที่หยิบจากกองทิ้งครบทุกใบ (กันไพ่หยิบหาย/กลายเป็นทิ้งได้)
+    var f = all.filter(function(m){ return pickedCodes.every(function(pc){ return m.cards.some(function(c){ return c.code === pc; }); }); });
+    res.melds = f;
+    if (f.length === 0) {
+      var hasSpeto = pickedCodes.some(function(c){ return isSpetoCode(c); });
+      res.emptyReason = 'ไพ่ที่หยิบมาจากกองทิ้ง (' + pickedCodes.join(', ') + ') ไม่สามารถเกิดเป็นชุดได้'
+        + (hasSpeto ? ' — สเปโตเข้าชุดเรียงไม่ได้ (เข้าชุดตองได้อย่างเดียว)' : '')
+        + ' · ลองกด "↩️ คืนไพ่ที่หยิบ" แล้วหยิบใบอื่น';
     }
+    return res;
+  }
+
+  if (selCodes && selCodes.length >= 3) {
+    var selKey = selCodes.slice().sort().join('|');
+    var exact = all.filter(function(m){ return m.cards.map(function(c){ return c.code; }).sort().join('|') === selKey; });
+    if (exact.length > 0) { res.melds = exact; return res; }
+    // เลือกเกินขนาด → ลองหาชุดที่อยู่ในไพ่ที่เลือกทั้งหมด
+    var within = all.filter(function(m){ return m.cards.every(function(c){ return selCodes.indexOf(c.code) >= 0; }); });
+    if (within.length > 0) { res.melds = within; return res; }
+    var selSpeto = selCodes.filter(function(c){ return isSpetoCode(c); });
+    res.emptyReason = 'ไพ่ที่คุณเลือกยังไม่ใช่ชุดที่เกิดได้ — ชุดตองต้องเลขเดียวกัน 3+ ใบ (คนละสำเนา) · ชุดเรียงต้องสีเดียวกัน เลขติดกัน 3+ ใบ'
+      + (selSpeto.length ? ' · สเปโต (' + selSpeto.join(', ') + ') เข้าชุดเรียงไม่ได้' : '');
+  }
+  return res;
+}
+
+function renderMeldOptions(opts) {
+  try {
+    var pickedCodes = myPickedCodes();
+    var melds = (opts && opts.melds) ? opts.melds : [];
+    var emptyReason = (opts && opts.emptyReason) ? opts.emptyReason : '';
     var container = document.getElementById('meld-section');
     if (!container) return;
     if (melds.length === 0) {
       container.innerHTML = '<div style="color:#aaa;text-align:center;padding:20px">ไม่พบชุดไพ่ที่เกิดได้<br><small>ต้องมีไพ่ 3 ใบขึ้นไป</small></div>' +
+        (emptyReason ? '<div style="color:#ffc85c;text-align:center;padding:6px 12px;font-size:0.85rem">💡 ' + emptyReason + '</div>' : '') +
         ((pickedCodes && pickedCodes.length > 0)
           ? '<div style="color:#e94560;text-align:center;padding:10px">⚠️ ต้องเกิดใบที่หยิบ!</div>' +
             '<div style="text-align:center;padding:4px"><button class="btn btn-secondary" onclick="returnPickedCards()">↩️ คืนไพ่ที่หยิบกลับกองทิ้ง</button></div>'
@@ -1772,7 +1822,7 @@ function renderMeldOptions(pickedCodes) {
         var highlighted = pickedCodes && pickedCodes.indexOf(c.code) >= 0;
         cardsHtml += '<div class="ms-card ' + handCardClass(c) + '" style="' + (highlighted ? 'border:2px solid #ffd700;box-shadow:0 0 8px rgba(255,215,0,0.6)' : '') + '">' + c.rank + '<br>' + c.suit + '</div>';
       }
-      html += '<div class="meld-set" onclick="selectMeld(' + mi + ', ' + JSON.stringify(pickedCodes||[]).replace(/"/g,'&quot;') + ')">' + cardsHtml + '<div style="width:100%;font-size:0.7rem;color:#888;text-align:center;margin-top:4px">' + (meld.type==='set'?'ตอง':'เรียง') + '</div></div>';
+      html += '<div class="meld-set" onclick="selectMeld(' + mi + ')">' + cardsHtml + '<div style="width:100%;font-size:0.7rem;color:#888;text-align:center;margin-top:4px">' + (meld.type==='set'?'ตอง':'เรียง') + '</div></div>';
     }
     html += '</div>';
     if (pickedCodes && pickedCodes.length > 0) {
@@ -1783,17 +1833,10 @@ function renderMeldOptions(pickedCodes) {
   } catch(e) { console.error('renderMeldOptions error:', e); }
 }
 
-function selectMeld(idx, pickedCodes) {
-  var handCodes = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
-  var hand = codesToCards(handCodes);
-  var melds = findMelds(hand);
-  if (pickedCodes && pickedCodes.length > 0) melds = melds.filter(function(m){ return m.cards.some(function(c){ return pickedCodes.indexOf(c.code) >= 0; }); });
+function selectMeld(idx) {
+  var melds = window._meldOptions || [];
   var meld = melds[idx];
   if (!meld) return;
-  if (pickedCodes && pickedCodes.length > 0) {
-    var usesPicked = meld.cards.some(function(c){ return pickedCodes.indexOf(c.code) >= 0; });
-    if (!usesPicked) { notify('❌ ต้องใช้ใบที่หยิบจากกองทิ้ง!'); return; }
-  }
   try {
     var sets = document.querySelectorAll('.meld-set');
     for (var si = 0; si < sets.length; si++) {
@@ -1848,6 +1891,47 @@ function updateLayoffBtn() {
   var hasTargets = layoffTargets && layoffTargets.length > 0;
   btn.disabled = !myTurn || !hasMeld || !hasTargets;
   btn.style.display = hasMeld ? 'inline-block' : 'none';
+}
+
+// FIX v49: อธิบายว่า "ทำไมปุ่มที่อยากกดถึงไม่ให้กด" — เดิมผู้เล่นเห็นแค่ปุ่มเทา ๆ ไม่รู้สาเหตุ
+function explainWhyDisabled() {
+  var el = document.getElementById('action-hint');
+  if (!el) return;
+  var msgs = [];
+  try {
+    if (!currentGame || !myTurn) { el.textContent = ''; return; }
+    var phase = currentGame.phase || 'draw';
+    var handCodes = (currentGame.hands && currentGame.hands[myPlayerId]) || [];
+    var hasMeld = currentGame.hasFirstMeld && currentGame.hasFirstMeld[myPlayerId];
+    var picked = myPickedCodes();
+
+    if (hasMeld && (!layoffTargets || layoffTargets.length === 0)) {
+      var spetoInHand = handCodes.filter(function(c){ return isSpetoCode(c); });
+      var runsOnTable = 0;
+      for (var pid in (currentGame.melds || {})) {
+        var ms = currentGame.melds[pid] || [];
+        for (var mi = 0; mi < ms.length; mi++) {
+          if (detectMeldType(ms[mi]) === 'เรียง') runsOnTable++;
+        }
+      }
+      if (spetoInHand.length > 0 && runsOnTable > 0) {
+        msgs.push('💚 ฝากไม่ได้: สเปโต (' + spetoInHand.join(', ') + ') ฝากลงชุดเรียงไม่ได้ (เกิดเป็นชุดตองแทน)');
+      } else {
+        msgs.push('💚 ฝากไม่ได้: ไพ่ในมือไม่ต่อกับชุดเรียงของเพื่อน (เลขติดกัน + สีเดียวกัน)');
+      }
+    }
+
+    if (phase === 'action' && selectedCards.length === 0 && picked.length === 0) {
+      var opts = getMeldOptions([], selectedCards);
+      if (opts.melds.length === 0) {
+        msgs.push('📐 วาง: ยังไม่มีชุดที่เกิดได้ในมือ — เลือกไพ่ในมือ 3+ ใบที่เป็นชุดตองหรือชุดเรียง');
+      }
+    }
+    if (picked.length > 0) {
+      msgs.push('⚠️ ต้อง "📐 วาง" ไพ่ที่หยิบมาให้ครบก่อน จึงจะทิ้งหรือจบตาได้');
+    }
+  } catch(e) { console.error('explainWhyDisabled error:', e); }
+  el.textContent = msgs.join(' · ');
 }
 
 function openLayoffModal() {
@@ -2227,8 +2311,8 @@ function toggleSelect(code) {
   try {
     var hand = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
     if (hand.indexOf(code) === -1) return;
-    var pickedCodes = myPickedCodes();
-    if (pickedCodes.indexOf(code) >= 0) { notify('❌ ไม่สามารถทิ้งไพ่ที่หยิบจากกองทิ้งมาได้'); return; }
+    // FIX v49: เลือกไพ่ที่หยิบจากกองทิ้งมาได้ (เพื่อใช้กับปุ่ม "📐 วาง")
+    //   แต่ยัง "ทิ้ง" ไพ่ใบนั้นไม่ได้ — เดินทางนี้ถูกบล็อกที่ discardSelected()/updateActionBtns() อยู่แล้ว
     var idx = selectedCards.indexOf(code);
     if (idx >= 0) selectedCards.splice(idx, 1); else selectedCards.push(code);
     renderYourHand();
@@ -2240,6 +2324,7 @@ function updateActionBtns() {
   try {
     var btnDraw = document.getElementById('btn-draw');
     var btnMeld = document.getElementById('btn-meld');
+    var btnPickMeld = document.getElementById('btn-pick-meld');
     var btnDiscard = document.getElementById('btn-discard');
     var btnEnd = document.getElementById('btn-end');
     var handStatus = document.getElementById('hand-status');
@@ -2250,7 +2335,8 @@ function updateActionBtns() {
     var isLastCard = myHand.length === 0;
     var canKnock = myHand.length <= 1;
     var hasMeld = currentGame.hasFirstMeld && currentGame.hasFirstMeld[myPlayerId];
-    var picked = myPickedCodes().length > 0;
+    var pickedCodesNow = myPickedCodes();
+    var picked = pickedCodesNow.length > 0;
     var btnKnock = document.getElementById('btn-knock');
     var btnRet = document.getElementById('btn-return-picked');
     if (btnRet) {
@@ -2261,7 +2347,19 @@ function updateActionBtns() {
     if (myTurn) {
       var phase = currentGame.phase || 'draw';
       if (btnDraw) btnDraw.disabled = phase !== 'draw' || canKnock;
-      if (btnMeld) btnMeld.disabled = false;
+      // FIX v49: แยกปุ่มชัดเจน
+      //   🃏 เก็บเกิด  = หยิบไพ่จากกองทิ้งมาเพื่อเกิด (ขั้นตอนแรก, ได้ตอนเฟส draw)
+      //   📐 วาง       = เกิดจากไพ่ในมือ (เลือกไพ่เอง หรือวางไพ่ที่หยิบมา)
+      var discardLen = (currentGame.discardPile || []).length;
+      if (btnPickMeld) {
+        btnPickMeld.disabled = phase !== 'draw' || canKnock || discardLen === 0 || picked;
+        btnPickMeld.style.display = 'inline-block';
+      }
+      if (btnMeld) {
+        // เปิดได้เมื่อ: มีไพ่ที่หยิบค้าง (ต้องวาง) OR มีชุดในมือที่เกิดได้ OR ผู้เล่นเลือกไพ่แล้ว
+        var meldOpts = getMeldOptions(pickedCodesNow, selectedCards);
+        btnMeld.disabled = !(picked || meldOpts.melds.length > 0);
+      }
       // FIX: also verify the selected card is still actually in hand (not stale after a meld)
       var selCodes = selectedCards.map(function(c){ return c.code || c; });
       var myHandCodes = currentGame.hands[myPlayerId] || [];
@@ -2279,10 +2377,11 @@ function updateActionBtns() {
       else if (!hasDiscardedThisTurn) handStatus.textContent = '⚠️ ต้องเลือกไพ่ 1 ใบที่จะทิ้ง แล้วกดปุ่ม 🗑️ ทิ้งก่อนจบตา!';
       else handStatus.textContent = '🃏 ทิ้งแล้ว ✓ กดจบตาได้เลย';
     } else {
-      [btnDraw, btnMeld, btnDiscard, btnEnd].forEach(function(b){ if(b) b.disabled = true; });
+      [btnDraw, btnMeld, btnPickMeld, btnDiscard, btnEnd].forEach(function(b){ if(b) b.disabled = true; });
       if (btnKnock) btnKnock.style.display = 'none';
       if (handStatus) handStatus.textContent = '⏳ รอตาคนอื่น...';
     }
+    explainWhyDisabled();
   } catch(e) {}
 }
 
@@ -2549,7 +2648,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v46 Loaded! (FIX v46 — layout ใหม่ + localStorage กลับเข้าห้องเดิม)');
+  console.log('[DummyRummy] v49 Loaded! (FIX v49 — แยกปุ่ม เก็บเกิด/วาง/ฝาก + อธิบายเหตุผลปุ่ม disabled)');
   // FIX v46: แสดงการ์ด "ห้องที่คุณอยู่" บนหน้าแรก (ถ้ามี session ค้าง)
   try { refreshActiveRoomCard(); } catch(e) {}
   // Cleanup: delete ONLY empty lobby rooms older than 1 hour — safe for active rooms
