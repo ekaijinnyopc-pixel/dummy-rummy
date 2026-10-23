@@ -213,7 +213,7 @@ r = turn('lt13', 'p2', 'MELD', p_meld_codes=json.dumps(['2♠', '2♥', '2♦'])
 g = get_game('lt13')
 pen, pend, seq, dd = state(g)
 print('   หลัง MELD: penalty =', pen, ' pending =', pend)
-ok('FIX v41.1: MELD แล้วไม่หักซ้ำ (ยังเป็น 100)', pen.get('p1') == 100, pen)
+ok('FIX v41.2: MELD แล้วหักเพิ่มอีก 100 (รวม 200)', pen.get('p1') == 200, pen)
 
 # --- T14: FIX v41.1 — 2.3 ซ้อนกับ 2.1 แล้ว MELD ไพ่สเปโตใบนั้นจริง → ยังเป็น 100 ---
 print('\nT14: FIX v41.1 — 2.1 + 2.3 ซ้อนกัน แล้วมีคน MELD 2♣ → รวม 100 เดียว (ไม่ใช่ 200)')
@@ -228,7 +228,7 @@ r = turn('lt14', 'p2', 'MELD', p_meld_codes=json.dumps(['2♣', '2♥', '2♦'])
 g = get_game('lt14')
 pen, pend, seq, dd = state(g)
 print('   หลัง MELD: penalty =', pen, ' pending =', pend)
-ok('รวมยังเป็น 100 (ไม่หักซ้ำเป็น 200)', pen.get('p1') == 100, pen)
+ok('รวมเป็น 200 (2.3 ซ้อนกับ 2.1 ได้)', pen.get('p1') == 200, pen)
 ok('pending ถูกล้าง', '2♣' not in pend, pend)
 
 # --- cleanup ---

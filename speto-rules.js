@@ -240,9 +240,8 @@
     if (res.speto) res.reasons.push('2.3');
 
     res.penalty = (res.dumy || res.full) ? MAX_PENALTY_PER_DISCARD : 0;
-    // FIX v41.1 (พี่เอยืนยัน 22:55): โทษรวมต่อ 1 การทิ้งไม่เกิน 100
-    //   → ถ้าการทิ้งใบเดียวกันทำให้ 2.1/2.2 แล้ว กรณี 2.3 (สเปโต) จะไม่หักซ้ำอีก
-    res.spetoPendingPenalty = (res.speto && res.penalty === 0) ? MAX_PENALTY_PER_DISCARD : 0;
+    // FIX v41.2 (พี่เอยืนยัน 22:57): 2.3 นับแยกจาก 2.1/2.2 → ถ้าซ้อนกันโดนรวม 200 ได้
+    res.spetoPendingPenalty = res.speto ? MAX_PENALTY_PER_DISCARD : 0;
     res.totalPenalty = res.penalty + res.spetoPendingPenalty;
     return res;
   }
@@ -263,7 +262,7 @@
       discarder: discarder,
       expiresAtTurn: (turnSeq || 0) + 1 + Math.max(0, (nPlayers || 1) - 1),
       code: code,
-      // FIX v41.1: ถ้าการทิ้งใบนี้ถูกหักไปแล้ว (2.1/2.2) → ตอน MELD ไม่หักซ้ำ (รวมต่อการทิ้ง ≤ 100)
+      // FIX v41.2: 2.3 นับแยกจาก 2.1/2.2 (ซ้อนกันได้ 200) — เก็บไว้เป็นข้อมูลแสดงผลเท่านั้น
       alreadyPenalized: !!alreadyPenalized
     };
   }
@@ -273,8 +272,7 @@
     var info = pending[code] || {};
     var expires = (info.expiresAtTurn != null) ? info.expiresAtTurn : 0;
     if ((turnSeq || 0) < expires) {
-      // FIX v41.1: ถ้าการทิ้งใบนี้โดนโทษไปแล้ว (2.1/2.2) → ไม่หักซ้ำตอน MELD
-      if (info.alreadyPenalized) return { discarder: info.discarder, penalty: 0, alreadyPenalized: true };
+      // FIX v41.2: 2.3 นับแยกจาก 2.1/2.2 → หักเต็ม 100 แม้การทิ้งใบเดียวกันโดน 2.1/2.2 ไปแล้ว (รวม 200)
       return { discarder: info.discarder, penalty: MAX_PENALTY_PER_DISCARD };
     }
     return null;    // หมดอายุแล้ว = ผ่าน 1 รอบ → รอด ไม่เสียแต้ม

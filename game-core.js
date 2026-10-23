@@ -1152,7 +1152,7 @@ async function discardSelected() {
     if (_predict) {
       if (_predict.dumy || _predict.full) {
         notify('⚠️ ทิ้ง' + (_predict.dumy ? 'ดัมมี่' : 'ตีเต็ม') + '! คุณจะเสีย ' + MAX_PENALTY_PER_DISCARD + ' แต้ม'
-          + (_predict.speto ? ' (รวมกรณีสเปโตแล้ว)' : ''));
+          + (_predict.speto ? ' และถ้ามีคนเกิดสเปโตใบนี้ภายใน 1 รอบ จะเสียเพิ่มอีก ' + MAX_PENALTY_PER_DISCARD + ' (รวม ' + (_predict.totalPenalty || MAX_PENALTY_PER_DISCARD) + ')' : ''));
       } else if (_predict.speto) {
         notify('⚠️ ทิ้งสเปโต! ถ้ามีคนเก็บไปเกิดภายใน 1 รอบ คุณจะเสีย ' + MAX_PENALTY_PER_DISCARD + ' แต้ม');
       }

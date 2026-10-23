@@ -13,8 +13,9 @@
 --                   → ตั้ง pending (game.spetoPending) รอ 1 รอบ
 --                   → ถ้ามีคน MELD ไพ่สเปโตใบนั้นภายในรอบ → คนทิ้งเสีย -100
 --                   → ถ้าผ่าน 1 รอบแล้วไม่มีใครเกิด → รอด (ไม่เสียแต้ม)
---   - 2.1 + 2.2 พร้อมกัน = หักรวม 100 ครั้งเดียว (MAX_PENALTY_PER_DISCARD)
---   - FIX v41.1: 2.3 ที่ซ้อนกับ 2.1/2.2 ของ "การทิ้งใบเดียวกัน" → รวมไม่เกิน 100 (พี่เอยืนยัน 22:55)
+--   - FIX v41.1: 2.1 + 2.2 พร้อมกัน = หักรวม 100 ครั้งเดียว (MAX_PENALTY_PER_DISCARD)
+--   - FIX v41.2 (พี่เอยืนยัน 22:57): 2.3 ที่ซ้อนกับ 2.1/2.2 ของ "การทิ้งใบเดียวกัน" → โดน 200 ได้
+--     (2.3 นับแยกจาก 2.1/2.2 — รวมการทิ้งใบเดียวกันสูงสุด 200)
 --   - LAYOFF (ฝาก) ไม่นับใน 2.3 (ต้องเป็น MELD เท่านั้น)
 --   - "1 รอบ" = จนกลับมาถึงตาคนทิ้งอีกครั้ง (ใช้ game.turnSeq นับ)
 --
@@ -678,7 +679,7 @@ BEGIN
 
     -- 2.3: ทิ้งสเปโตทั้งที่กองทิ้ง (ก่อนทิ้ง) มีการ์ดเกี่ยวเนื่องสเปโต → ตั้ง pending รอ 1 รอบ
     --   FIX v41.1 (พี่เอยืนยัน 22:55): โทษ "รวมต่อ 1 การทิ้ง" ไม่เกิน 100 แม้กรณี 2.3 ซ้อนกับ 2.1/2.2
-    --   → เก็บ alreadyPenalized ไว้ใน pending: ถ้าการทิ้งใบนี้ถูกหักไปแล้ว (2.1/2.2) → ตอน MELD ไม่หักซ้ำ
+    --   → FIX v41.2 (พี่เอยืนยัน 22:57): 2.3 ซ้อนกับ 2.1/2.2 ของ "การทิ้งใบเดียวกัน" = โดน 200 ได้ (2.3 นับแยกจาก 2.1/2.2)
     IF rummy_is_speto(p_card_code) AND rummy_speto_related(p_card_code, v_old_pile) THEN
       v_pending := COALESCE(v_game->'spetoPending', '{}'::JSONB);
       IF jsonb_typeof(v_pending) IS DISTINCT FROM 'object' THEN v_pending := '{}'::JSONB; END IF;
@@ -686,7 +687,7 @@ BEGIN
         'discarder', p_player_id,
         'expiresAtTurn', (v_turn_seq + 1 + (v_n_players - 1))::INTEGER,
         'code', p_card_code,
-        'alreadyPenalized', (v_discard_penalty > 0)));
+        'alreadyPenalized', (v_discard_penalty > 0)));   -- FIX v41.2: เก็บไว้เป็นข้อมูล (2.3 ยังหักเพิ่มได้)
       v_game := jsonb_set(v_game, '{spetoPending}', v_pending);
     END IF;
 
@@ -754,15 +755,13 @@ BEGIN
           v_pending_info := v_pending->v_code2;
           v_discarder := v_pending_info->>'discarder';
           v_expires := COALESCE((v_pending_info->>'expiresAtTurn')::INT, 0);
-          -- FIX v41.1: ถ้าการทิ้งไพ่ใบนี้ถูกหักไปแล้ว (2.1/2.2 ตอนทิ้ง) → ไม่หักซ้ำตอน MELD
-          --   (โทษรวมต่อ 1 การทิ้งไม่เกิน MAX_PENALTY_PER_DISCARD = 100)
+          -- FIX v41.2 (พี่เอยืนยัน 22:57): 2.3 ซ้อนกับ 2.1/2.2 ของการทิ้งใบเดียวกัน → โดน 200 ได้
+          --   (2.3 นับแยกจาก 2.1/2.2 — ไม่ใช้แค่ alreadyPenalized เป็นเงื่อนไขกันหักซ้ำ)
           IF v_turn_seq < v_expires THEN
-            IF NOT COALESCE((v_pending_info->>'alreadyPenalized')::BOOLEAN, false) THEN
-              v_game := jsonb_set(v_game, '{spettoPenalty}', COALESCE(v_game->'spettoPenalty', '{}'::JSONB));
-              v_game := jsonb_set(v_game, ARRAY['spettoPenalty', v_discarder],
-                to_jsonb(COALESCE((v_game->'spettoPenalty'->>v_discarder)::INT, 0) + v_max_penalty));
-              v_game := jsonb_set(v_game, ARRAY['spettoPenaltyDone', v_code2], 'true');
-            END IF;
+            v_game := jsonb_set(v_game, '{spettoPenalty}', COALESCE(v_game->'spettoPenalty', '{}'::JSONB));
+            v_game := jsonb_set(v_game, ARRAY['spettoPenalty', v_discarder],
+              to_jsonb(COALESCE((v_game->'spettoPenalty'->>v_discarder)::INT, 0) + v_max_penalty));
+            v_game := jsonb_set(v_game, ARRAY['spettoPenaltyDone', v_code2], 'true');
           END IF;
           v_pending := v_pending - v_code2;   -- ลบ pending (กันหักซ้ำ)
           v_game := jsonb_set(v_game, '{spetoPending}', v_pending);

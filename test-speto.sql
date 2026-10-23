@@ -248,7 +248,7 @@ SELECT show_state('t12');
 
 \echo ''
 \echo '=============================================================='
-\echo ' T13 (FIX v41.1): 2.3 ซ้อนกับ 2.1 ของการทิ้งใบเดียวกัน → รวม 100 เดียว (ไม่ใช่ 200)'
+\echo ' T13 (FIX v41.2): 2.3 ซ้อนกับ 2.1 ของการทิ้งใบเดียวกัน → รวม 200 (2.3 นับแยกจาก 2.1/2.2)'
 \echo '=============================================================='
 SELECT mk_room('t13', ARRAY['p1','p2'],
   jsonb_build_object('p1', '["2♣"]'::jsonb, 'p2', '["2♥","2♦","5♣"]'::jsonb),
@@ -261,7 +261,7 @@ SELECT (r->>'error') AS err, (r->>'dumy') AS dumy, (r->>'full') AS full,
        (r->'game'->'spetoPending') AS pending
 FROM (SELECT play_turn('t13','p1','DISCARD', p_card_code => '2♣', p_expected_version => 0) AS r) s;
 
-\echo '--- 2) p2 หยิบ 2♣ มา MELD (ตอง 2) → ต้อง "ไม่หักซ้ำ" (รวมยังเป็น 100) ---'
+\echo '--- 2) p2 หยิบ 2♣ มา MELD (ตอง 2) → ต้องหักเพิ่มอีก 100 (รวม 200) ---'
 UPDATE rooms SET game = jsonb_set(game, ARRAY['hands','p2'], '["2♥","2♦","5♣","2♣"]'::jsonb) WHERE id = 't13';
 SELECT (r->>'error') AS err, (r->'game'->'spettoPenalty') AS spetto,
        (r->'game'->'spetoPending') AS pending
