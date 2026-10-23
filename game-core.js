@@ -395,7 +395,10 @@ async function pickDiscardClientSide(idx, pid) {
 }
 
 // ล้างธง "ไพ่ที่หยิบ" ของผู้เล่น (หลังเกิดแล้ว หรือ คืนไพ่แล้ว)
-async function clearPickedFlag(pid) {
+// server เวอร์ชันเก่าไม่ล้าง pickedFromDiscard ให้ → ต้องล้างเอง
+// มี retry เพราะถ้าเขียนไม่สำเร็จ (version conflict) ผู้เล่นจะค้างที่ "ต้องเกิดก่อน"
+async function clearPickedFlag(pid, attempt) {
+  attempt = attempt || 0;
   try {
     var rowRes = await db.from('rooms').select('id,game,version').eq('id', roomCode).single();
     if (rowRes.error || !rowRes.data || !rowRes.data.game) return false;
@@ -413,7 +416,12 @@ async function clearPickedFlag(pid) {
       .eq('id', roomCode)
       .eq('version', rowVer)
       .select('version');
-    if (upd.error || !upd.data || upd.data.length === 0) { await resyncGame(); return false; }
+    if (upd.error || !upd.data || upd.data.length === 0) {
+      // version ชน → อ่านใหม่แล้วลองอีกรอบ (สูงสุด 3 ครั้ง)
+      if (attempt < 2) { await delay(150); return clearPickedFlag(pid, attempt + 1); }
+      await resyncGame();
+      return false;
+    }
     currentGame = ng;
     currentRoomVersion = ng.version;
     return true;
@@ -431,8 +439,29 @@ async function returnPickedCardsFor(pid) {
     var rowVer = rowRes.data.version || 0;
     var ver = Math.max(rowVer, g.version || 0);
     var ng = JSON.parse(JSON.stringify(g));
-    ng.hands[pid] = (ng.hands[pid] || []).filter(function(c){ return taken.indexOf(c) === -1; });
-    ng.discardPile = (ng.discardPile || []).concat(taken);
+
+    // FIX v36: คืนเฉพาะไพ่ที่ "ยังอยู่บนมือ" เท่านั้น
+    // (ถ้าเกิดไปแล้วไพ่นั้นไม่อยู่บนมืออีก → ห้ามย้ายกลับมา จะได้ไพ่ซ้ำในเกม)
+    var handNow = (ng.hands && ng.hands[pid]) ? ng.hands[pid] : [];
+    var toReturn = taken.filter(function(c){ return handNow.indexOf(c) >= 0; });
+    if (toReturn.length === 0) {
+      // ไพ่ที่หยิบถูกเกิดไปหมดแล้ว → ล้างธงเฉยๆ (ไม่ต้องคืนไพ่)
+      ng.pickedFromDiscard = ng.pickedFromDiscard || {};
+      ng.pickedFromDiscard[pid] = [];
+      ng.version = ver + 1;
+      var upd0 = await db.from('rooms')
+        .update({ game: ng, version: ng.version })
+        .eq('id', roomCode)
+        .eq('version', rowVer)
+        .select('version');
+      if (upd0.error || !upd0.data || upd0.data.length === 0) { await resyncGame(); return false; }
+      currentGame = ng;
+      currentRoomVersion = ng.version;
+      return true;
+    }
+
+    ng.hands[pid] = handNow.filter(function(c){ return toReturn.indexOf(c) === -1; });
+    ng.discardPile = (ng.discardPile || []).concat(toReturn);
     ng.pickedFromDiscard = ng.pickedFromDiscard || {};
     ng.pickedFromDiscard[pid] = [];
     ng.phase = 'action';
@@ -559,7 +588,7 @@ function resetPlayerTimer() {
 function autoDiscard() {
   var handCodes = currentGame.hands[myPlayerId] || [];
   var hand = codesToCards(handCodes);
-  var picked = (currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[myPlayerId]) || [];
+  var picked = myPickedCodes();
   var allMelds = findAllSetsAndRuns(hand);
   var usedCodes = {};
   allMelds.forEach(function(m) { m.cards.forEach(function(c) { usedCodes[c.code] = true; }); });
@@ -790,11 +819,26 @@ async function drawCard() {
 
 // ไพ่ที่หยิบจากกองทิ้ง (รวมทั้ง state ฝั่ง client และที่บันทึกไว้ใน DB)
 // รวมสองที่ไว้ เพื่อให้รีเฟรชหน้าเว็บแล้วกติกา "ต้องเกิดก่อนทิ้ง" ยังบังคับอยู่
+// FIX v36: กรองไพ่ที่ "ยังอยู่บนมือ" เท่านั้น — ถ้า server ไม่ล้าง pickedFromDiscard
+// หลังเกิด (server เวอร์ชันเก่าไม่ล้างให้) ไพ่ที่เกิดแล้วจะไม่อยู่บนมือ
+// → ถ้าไม่กรอง ผู้เล่นจะถูกล็อก "ต้องเกิดก่อน" ทิ้งไพ่ไม่ได้เลย
 function myPickedCodes() {
   var fromGame = (currentGame && currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[myPlayerId]) || [];
-  var out = fromGame.slice();
-  for (var i = 0; i < pendingPickedCodes.length; i++) {
-    if (out.indexOf(pendingPickedCodes[i]) < 0) out.push(pendingPickedCodes[i]);
+  var hand = (currentGame && currentGame.hands && currentGame.hands[myPlayerId]) || [];
+  var pending = pendingPickedCodes || [];
+
+  // FIX v36.1: server เวอร์ชันเก่าไม่ล้าง pickedFromDiscard หลังเกิด (เวอร์ชัน FIX ที่
+  // ยังไม่ได้ apply จะล้างทั้งก้อน) → ถ้า "ไพ่ที่หยิบสักใบหลุดจากมือไปแล้ว" แปลว่า
+  // ผู้เล่นเกิดไปแล้ว (มือเดียวกับเซิร์ฟเวอร์ที่ใช้เกิด) → ถือว่าครบถ้วน ไม่ค้าง
+  var stillOnHand = [];
+  for (var i = 0; i < fromGame.length; i++) {
+    if (hand.indexOf(fromGame[i]) >= 0) stillOnHand.push(fromGame[i]);
+  }
+  if (fromGame.length > 0 && stillOnHand.length < fromGame.length) return [];
+
+  var out = stillOnHand.slice();
+  for (var j = 0; j < pending.length; j++) {
+    if (out.indexOf(pending[j]) < 0) out.push(pending[j]);
   }
   return out;
 }
@@ -1117,6 +1161,8 @@ async function botPlay(botId) {
     // --- DISCARD ---
     if (hand.length > 0) {
       var pCodes = (currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[botId]) || [];
+      var botHand = currentGame.hands[botId] || [];
+      pCodes = pCodes.filter(function(c){ return botHand.indexOf(c) >= 0; });
       var canD = hand.filter(function(c){ return pCodes.indexOf(c.code) === -1; });
       if (canD.length === 0) canD = hand;
       var sD = canD.filter(function(c){ return isSpeto(c); });
@@ -1539,7 +1585,7 @@ function renderYourHand() {
       }
       if (allFound) sorted = ordered; else myHandOrder = null;
     }
-    var pickedCodes = (currentGame && currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[myPlayerId]) || [];
+    var pickedCodes = myPickedCodes();
     var html = '';
     for (var hi = 0; hi < sorted.length; hi++) {
       var card = sorted[hi];
@@ -1612,7 +1658,7 @@ function toggleSelect(code) {
   try {
     var hand = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
     if (hand.indexOf(code) === -1) return;
-    var pickedCodes = (currentGame && currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[myPlayerId]) || [];
+    var pickedCodes = myPickedCodes();
     if (pickedCodes.indexOf(code) >= 0) { notify('❌ ไม่สามารถทิ้งไพ่ที่หยิบจากกองทิ้งมาได้'); return; }
     var idx = selectedCards.indexOf(code);
     if (idx >= 0) selectedCards.splice(idx, 1); else selectedCards.push(code);
