@@ -1,5 +1,5 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v44 (FIX v41.2 — กติกาโทษ -100: 2.1 ทิ้งดัมมี่ / 2.2 ตีเต็ม / 2.3 สเปโต)
+// 🃏 DUMMY RUMMY — game-core.js v45 (FIX v42 — กู้ห้อง game=NULL + แก้ findAllSetsAndRuns)
 // - hotfix: เปลี่ยน select('*') → explicit columns เพื่อหลีก schema cache 406 error
 // - รอพี่เอรัน SQL schema เพิ่ม column
 // ============================================================
@@ -372,6 +372,7 @@ async function finishRoundClientSide(koId, attempt) {
       return null;
     }
     currentGame = ng;
+    snapshotGame(ng);   // FIX v42
     currentRoomVersion = ng.version;
     return {
       winner: calc.winner,
@@ -393,6 +394,63 @@ var currentGame = null;
 var currentRoomVersion = 0; // rooms.version — แยกจาก currentGame เพราะ version อยู่ที่ row level ไม่ใช่ใน game JSONB
 // Helper: deep-copy currentGame and apply patch, so JSON.stringify comparison always detects changes
 function setGame(patch) { var ng = JSON.parse(JSON.stringify(currentGame)); Object.assign(ng, patch); currentGame = ng; }
+
+// ===== FIX v42: กู้ห้องที่ game หาย (rooms.game = NULL) =====
+// สาเหตุ: SQL play_turn ตัวเก่าใช้ jsonb_set(v_game,'{winner}',to_jsonb(v_win_pid))
+//   → เมื่อไม่มีผู้ชนะ v_win_pid = NULL → jsonb_set คืน NULL → rooms.game = NULL
+//   → RPC ทุกตัวตอบ ROOM_NOT_FOUND (บรรทัด SQL: IF v_game IS NULL THEN ...)
+// ทางแก้ฝั่ง client: ตรวจพบว่า game เป็น NULL → เขียน state ล่าสุดที่เรามีกลับเข้าไป
+var lastKnownGame = null;   // snapshot ของ game ที่เคยเห็น (ใช้กู้ห้อง)
+var repairingRoom = false;
+
+function snapshotGame(g) {
+  if (!g) return;
+  try {
+    lastKnownGame = JSON.parse(JSON.stringify(g));
+  } catch(e) { /* ignore */ }
+}
+
+// พยายามกู้ห้อง: ถ้า rooms.game เป็น NULL แต่เรายังมี snapshot → เขียนกลับ
+async function tryRepairRoom(reason) {
+  if (repairingRoom) return false;
+  if (!roomCode) return false;
+  repairingRoom = true;
+  try {
+    console.warn('[FIX v42] พยายามกู้ห้อง game=NULL —', reason || '');
+    var row = await db.from('rooms').select('id,players,game,status,version').eq('id', roomCode).single();
+    if (row.error || !row.data) { console.warn('[FIX v42] อ่านห้องไม่ได้'); return false; }
+    if (row.data.game) { console.log('[FIX v42] ห้องยังปกติ ไม่ต้องกู้'); return true; }
+    var players = row.data.players || {};
+    var pids = Object.keys(players);
+    if (pids.length < 2) { console.warn('[FIX v42] ผู้เล่นไม่ครบ กู้ไม่ได้'); return false; }
+    var g = lastKnownGame;
+    if (!g || !g.hands) {
+      console.warn('[FIX v42] ไม่มี snapshot ให้กู้');
+      notify('❌ ห้องเสีย (game หาย) — กรุณาออกจากห้องแล้วเข้าใหม่');
+      return false;
+    }
+    // ไม่กู้ถ้าห้องจบเกมไปแล้ว (status ended) — ปล่อยให้แสดงผลแพ้/ชนะตามเดิม
+    if (row.data.status === 'ended') { console.log('[FIX v42] ห้องจบแล้ว ไม่กู้'); return false; }
+    g = JSON.parse(JSON.stringify(g));
+    g.version = (row.data.version || 0) + 1;
+    g.status = 'playing';
+    var upd = await db.from('rooms')
+      .update({ status: 'playing', game: g, version: g.version })
+      .eq('id', roomCode);
+    if (upd.error) { console.warn('[FIX v42] เขียนกลับไม่สำเร็จ:', upd.error.message); return false; }
+    currentGame = g;
+    currentRoomVersion = g.version;
+    console.log('[FIX v42] กู้ห้องสำเร็จ! version =', g.version);
+    notify('♻️ กู้ห้องให้แล้ว (เกมกลับมาเล่นต่อได้)');
+    renderGame(g);
+    return true;
+  } catch(e) {
+    console.error('[FIX v42] กู้ห้อง error:', e);
+    return false;
+  } finally {
+    repairingRoom = false;
+  }
+}
 
 // --- RPC PLAY TURN: all game actions go through this atomic function ---
 // Returns {ok, game, error, ...} from PostgreSQL play_turn()
@@ -423,6 +481,7 @@ async function rpcPlayTurn(action, opts) {
         var fresh = await db.from('rooms').select('id,code,players,game,status,version,totalplayers').eq('id', roomCode).single();
         if (fresh.data && fresh.data.game) {
           currentGame = fresh.data.game;
+          snapshotGame(fresh.data.game);   // FIX v42
           currentRoomVersion = fresh.data.version || currentRoomVersion;
           renderGame(currentGame);
         }
@@ -436,13 +495,26 @@ async function rpcPlayTurn(action, opts) {
         notify('ไม่ใช่ตาของคุณ!');
       } else if (data && data.error === 'MUST_DISCARD') {
         notify('❌ ต้องทิ้งไพ่ 1 ใบก่อนจบตา!');
+      } else if (data && data.error === 'ROOM_NOT_FOUND') {
+        // FIX v42: rooms.game เป็น NULL → พยายามกู้ห้องแล้วลองใหม่
+        console.warn('[RPC] ROOM_NOT_FOUND — game เป็น NULL, กำลังกู้ห้อง');
+        var fixed = await tryRepairRoom('rpc ' + action + ': ROOM_NOT_FOUND');
+        if (fixed) {
+          var retry = await rpcPlayTurn(action, opts);
+          if (retry) return retry;
+        } else {
+          notify('❌ ห้องเสีย (game หาย) — กำลังลองกู้... ถ้าไม่ได้ให้ออกจากห้องแล้วเข้าใหม่');
+        }
       }
       return null;
     }
     // Update currentGame from server response
     if (data.game) {
       currentGame = data.game;
+      snapshotGame(data.game);
       currentRoomVersion = (data.game.version || currentRoomVersion + 1);
+      // FIX v42: ห้ามเขียน game=null
+      if (!currentGame) { console.warn('[FIX v42] rpc: ไม่มี currentGame — ข้าม'); return null; }
       await db.from('rooms').update({ game: currentGame, version: currentRoomVersion }).eq('id', roomCode);
     }
     return data;
@@ -464,6 +536,7 @@ async function resyncGame() {
     var r = await db.from('rooms').select('id,code,game,version').eq('id', roomCode).single();
     if (r.data && r.data.game) {
       currentGame = r.data.game;
+      snapshotGame(r.data.game);
       currentRoomVersion = r.data.version || (r.data.game.version || currentRoomVersion);
       renderGame(currentGame);
     }
@@ -515,6 +588,7 @@ async function pickDiscardClientSide(idx, pid) {
       return null;
     }
     currentGame = ng;
+    snapshotGame(ng);   // FIX v42
     currentRoomVersion = ng.version;
     return { ok: true, game: ng, taken: taken, speto: speto };
   } catch(e) { console.error('pickDiscardClientSide error:', e); return null; }
@@ -549,6 +623,7 @@ async function clearPickedFlag(pid, attempt) {
       return false;
     }
     currentGame = ng;
+    snapshotGame(ng);   // FIX v42
     currentRoomVersion = ng.version;
     return true;
   } catch(e) { console.error('clearPickedFlag error:', e); return false; }
@@ -591,6 +666,7 @@ async function markSpetoDiscarded(pid, code, attempt) {
       return false;
     }
     currentGame = ng;
+    snapshotGame(ng);   // FIX v42
     currentRoomVersion = ng.version;
     return true;
   } catch(e) { console.error('markSpetoDiscarded error:', e); return false; }
@@ -641,6 +717,7 @@ async function applySpetoPenalty(pid, codes, attempt) {
       return false;
     }
     currentGame = ng;
+    snapshotGame(ng);   // FIX v42
     currentRoomVersion = ng.version;
     return true;
   } catch(e) { console.error('applySpetoPenalty error:', e); return false; }
@@ -674,6 +751,7 @@ async function returnPickedCardsFor(pid) {
         .select('version');
       if (upd0.error || !upd0.data || upd0.data.length === 0) { await resyncGame(); return false; }
       currentGame = ng;
+      snapshotGame(ng);   // FIX v42
       currentRoomVersion = ng.version;
       return true;
     }
@@ -691,6 +769,7 @@ async function returnPickedCardsFor(pid) {
       .select('version');
     if (upd.error || !upd.data || upd.data.length === 0) { await resyncGame(); return false; }
     currentGame = ng;
+    snapshotGame(ng);   // FIX v42
     currentRoomVersion = ng.version;
     return true;
   } catch(e) { console.error('returnPickedCardsFor error:', e); return false; }
@@ -840,7 +919,7 @@ function autoDiscard() {
   var handCodes = currentGame.hands[myPlayerId] || [];
   var hand = codesToCards(handCodes);
   var picked = myPickedCodes();
-  var allMelds = findAllSetsAndRuns(hand);
+  var allMelds = findMelds(hand);   // FIX v42: findAllSetsAndRuns ไม่มีอยู่จริง (ReferenceError) → ใช้ findMelds
   var usedCodes = {};
   allMelds.forEach(function(m) { m.cards.forEach(function(c) { usedCodes[c.code] = true; }); });
   var canD = hand.filter(function(c) { return picked.indexOf(c.code) === -1; });
@@ -875,12 +954,18 @@ async function setupRealtime(rid) {
         var room = payload.new;
         if (!room) { console.log('[RT] no room data'); return; }
         console.log('[RT] received:', room.status, '| turn:', room.game ? room.game.turnPlayerId : 'no game');
+        if (room.status === 'playing' && !room.game) {
+          // FIX v42: ห้องโดน game=NULL → พยายามกู้จาก snapshot ล่าสุด
+          tryRepairRoom('realtime: playing + game=NULL');
+          return;
+        }
         if (room.status === 'lobby') {
           totalPlayers = room.totalplayers || 4;
           renderLobby(room.players || {}, totalPlayers);
         }
         else if (room.status === 'playing' && room.game) {
           currentGame = room.game;
+          snapshotGame(room.game);
           currentRoomVersion = room.version || currentRoomVersion;
           showScreen('game-screen');
           renderGame(room.game);
@@ -1039,6 +1124,7 @@ async function startGame() {
     }
     await db.from('rooms').update({ status: 'playing', game: gameData }).eq('id', roomCode);
     currentGame = gameData;
+    snapshotGame(gameData);
     showScreen('game-screen');
     renderGame(gameData);
     setTimeout(function() {
@@ -1185,6 +1271,8 @@ async function advanceTurn() {
     var nextPid = order[nextIdx];
     console.log('[Turn] advancing from', currentGame.turnPlayerId, 'to', nextPid);
     setGame({ turnPlayerId: nextPid, phase: 'draw', turnStartTime: Date.now() });
+    // FIX v42: ห้ามเขียน game=null (จะทำให้ห้องพัง / ROOM_NOT_FOUND)
+    if (!currentGame) { console.warn('[FIX v42] advanceTurn: ไม่มี currentGame — ข้าม'); return; }
     await db.from('rooms').update({ game: currentGame }).eq('id', roomCode);
     renderGame(currentGame);
     // Bot will be triggered by realtime callback
@@ -1257,6 +1345,8 @@ function botWithTimeout(botId) {
         currentGame.turnPlayerId = nextPid;
         currentGame.phase = 'draw';
         currentGame.turnStartTime = Date.now();
+        // FIX v42: ห้ามเขียน game=null
+        if (!currentGame) { console.warn('[FIX v42] bot timeout: ไม่มี currentGame — ข้าม'); return; }
         db.from('rooms').update({ game: currentGame }).eq('id', roomCode).then(function() {
           console.log('[Bot] timeout advanced to', nextPid);
           renderGame(currentGame);
@@ -1289,6 +1379,7 @@ async function botPlay(botId) {
     var _data = await db.from('rooms').select('id,code,game,version').eq('id', roomCode).single();
     if (_data.data && _data.data.game) {
       currentGame = _data.data.game;
+      snapshotGame(_data.data.game);
       currentRoomVersion = _data.data.version || currentRoomVersion;
       console.log('[Bot] re-read turn:', currentGame.turnPlayerId, 'phase:', currentGame.phase, 'version:', currentGame.version);
     }
@@ -2129,6 +2220,7 @@ async function playAgain() {
     gameData.hasDiscardedThisTurn = {};
     await db.from('rooms').update({ status: 'playing', game: gameData }).eq('id', roomCode);
     currentGame = gameData;
+    snapshotGame(gameData);
     selectedCards = []; pendingPickedCodes = []; layoffTargets = [];
     showScreen('game-screen');
     renderGame(gameData);
@@ -2165,11 +2257,17 @@ function startPolling(rid) {
             renderLobby(currentLobbyPlayers, totalPlayers);
           }
         }
+        if (remoteRoom.status === 'playing' && !remoteRoom.game) {
+          // FIX v42: ห้องโดน game=NULL → พยายามกู้จาก snapshot ล่าสุด
+          tryRepairRoom('poll: playing + game=NULL');
+          return;
+        }
         if (remoteRoom.game) {
           var changed = JSON.stringify(remoteRoom.game) !== JSON.stringify(currentGame);
           if (changed) {
             console.log('[Poll] game changed, turn:', remoteRoom.game.turnPlayerId);
             currentGame = remoteRoom.game;
+            snapshotGame(remoteRoom.game);
             currentRoomVersion = remoteRoom.version || currentRoomVersion;
             if (remoteRoom.status === 'playing') {
               renderGame(currentGame);
@@ -2203,7 +2301,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v44 Loaded! (FIX v41.2 — กติกาโทษ 2.1/2.2/2.3)');
+  console.log('[DummyRummy] v45 Loaded! (FIX v42 — กู้ห้องเมื่อ game=NULL + fix findAllSetsAndRuns)');
   // Cleanup: delete ONLY empty lobby rooms older than 1 hour — safe for active rooms
   if (db) {
     (async function() {
