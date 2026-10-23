@@ -174,6 +174,25 @@ client คำนวณคะแนนคาดหวังเพื่อแส�
 
 **ผลทดสอบ**: `node --check game-core.js` SYNTAX OK · `node test-speto-rules.js` **65/65** ✅ · live ยืนยัน `game-core.js?v=46` + ทุก element ใหม่อยู่บน live แล้ว ✅
 
+### ✅ FIX v47 (2026-10-24 02:31) — commit `e26160b` · deploy `v47`
+
+พี่เอสั่ง 02:23: **"พบว่าเวลาหมด แต่ยังรอผู้เล่น"** → เพิ่มเงื่อนไขหมดเวลา
+
+| # | รายการ | ไฟล์ | รายละเอียด |
+|---|---|---|---|
+| 17 | **แก้บั๊กต้นเหตุ** | `game-core.js` | `autoDiscard()` เรียก `doDiscard()` ที่ **ไม่มีอยู่จริงในไฟล์** → `ReferenceError` → หมดเวลาแล้วตาเลยค้างรอผู้เล่น (ต้นเหตุที่พี่เอเจอ) |
+| 18 | **เงื่อนไข 1** | `game-core.js` | หมดเวลา + **ยังไม่จั่ว** (phase=`draw`) → `DRAW_DECK` อัตโนมัติ → แล้วค่อยทิ้ง |
+| 19 | **เงื่อนไข 2** | `game-core.js` | หมดเวลา + **จั่วแล้ว** (phase=`action`) → บังคับทิ้งสุ่มในมือทันที |
+| 20 | **`autoPlayTimedOutPlayer(pid, isSelf)`** | `game-core.js` | ฟังก์ชันกลาง ใช้ร่วมทั้งตัวเองหมดเวลา และเล่นแทนผู้เล่นอื่น · เคลียร์ `pickedFromDiscard` ค้างก่อนทิ้ง (server บล็อก `MUST_MELD_PICKED`) |
+| 21 | **`pickRandomDiscardCode(pid)`** | `game-core.js` | สุ่มไพ่จากมือ · ไม่หยิบไพ่ที่หยิบค้าง · **เลี่ยงสเปโต** ถ้ามีทางเลือก (ลดโทษให้ผู้เล่น) |
+| 22 | **`checkStalledTurn()` — watchdog** | `game-core.js` | ตรวจทุกรอบ polling (1.5s) ว่าตาของมนุษย์คนอื่นค้างเกิน `120s + 20s grace` → เล่นแทน → **เกมไม่ค้างแม้ผู้เล่นหลุดเน็ต/ปิดเครื่อง** |
+| 23 | **กันเกมค้างตอนเหลือไพ่น้อย** | `game-core.js` | เหลือ ≤1 ใบ → น็อคจบรอบ (`finishRoundClientSide`) แบบเดียวกับบอท (ไม่งั้นไม่มีใครทิ้งไพ่ → ค้าง) |
+| 24 | **cache-buster** | `index.html` | `game-core.js?v=47` + `speto-rules.js?v=47` |
+
+**ผลทดสอบ**: `node --check game-core.js` SYNTAX OK (เจอ syntax error จากการแทรก watchdog → แก้ brace แล้ว) · `node test-speto-rules.js` **65/65** ✅ · live ยืนยัน `game-core.js?v=47` + ทุกฟังก์ชันใหม่อยู่บน live แล้ว ✅
+
+> ⚠️ **หมายเหตุ**: watchdog ทำงานฝั่ง client (client ที่ยังเปิดหน้าเว็บอยู่จะเป็นคนช่วยเล่นแทน) — ถ้าทุกคนออกจากห้องพร้อมกัน จะไม่มีใครช่วย ตอนนี้ยังไม่มี server-side timeout (ต้องแก้ SQL ใน Supabase)
+
 ### 🧪 ผลทดสอบ
 - `node test-speto-rules.js` → **65/65** ✅
 - `node --check game-core.js` → **SYNTAX OK** ✅
