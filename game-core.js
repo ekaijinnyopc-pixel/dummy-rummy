@@ -587,13 +587,17 @@ async function applySpetoPenalty(pid, codes, attempt) {
     var ng = JSON.parse(JSON.stringify(g));
     ng.spetoOrigin = ng.spetoOrigin || {};
     ng.spettoPenalty = ng.spettoPenalty || {};
+    ng.spettoPenaltyDone = ng.spettoPenaltyDone || {};
     var loserSet = {};
     for (var i = 0; i < spetos.length; i++) {
       var code = spetos[i];
+      // FIX v39.2: กันหักซ้ำ — ถ้า server (หรือ client) หักไปแล้วขอใบนี้ → ข้าม
+      if (ng.spettoPenaltyDone[code]) continue;
       var origin = ng.spetoOrigin[code] || null;
       var loser = origin || pid;          // ถ้าไม่มีคนทิ้ง → คนที่นำไปใช้เสีย
       loserSet[loser] = (loserSet[loser] || 0) + 100;
       delete ng.spetoOrigin[code];        // กันหักซ้ำ
+      ng.spettoPenaltyDone[code] = true;  // บันทึกว่าหักไปแล้ว
     }
     var changed = false;
     for (var l in loserSet) {
@@ -2091,6 +2095,8 @@ async function playAgain() {
     // FIX v39: รีเซ็ตโทษสเปโต + ผู้ทิ้งสเปโต ตอนขึ้นรอบใหม่
     gameData.spettoPenalty = {};
     gameData.spetoOrigin = {};
+    gameData.spettoPenaltyDone = {};
+    gameData.hasDiscardedThisTurn = {};
     await db.from('rooms').update({ status: 'playing', game: gameData }).eq('id', roomCode);
     currentGame = gameData;
     selectedCards = []; pendingPickedCodes = []; layoffTargets = [];

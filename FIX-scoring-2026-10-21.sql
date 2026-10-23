@@ -127,6 +127,7 @@ DECLARE
   v_is_first_meld BOOLEAN;
   v_picked        JSONB;
   v_speto_loser   TEXT;
+  v_has_discarded BOOLEAN;
 BEGIN
   SELECT game, version INTO v_game, v_new_version FROM rooms WHERE id = p_game_id FOR UPDATE;
   v_new_version := COALESCE(v_new_version, 0);
@@ -149,6 +150,25 @@ BEGIN
   v_scores  := COALESCE(v_game->'scores', '{}'::JSONB);
   v_has_fm  := COALESCE(v_game->'hasFirstMeld', '{}'::JSONB);
   v_new_version := v_new_version + 1;
+
+  -- FIX v39.2 (2026-10-23): jsonb_set ที่ path 2 ชั้น (เช่น {'spetoOrigin','2♣'})
+  --   จะ "เขียนทับเงียบ ๆ" (ไม่ error, ไม่มีอะไรเกิดขึ้น) ถ้า key ชั้นแรกยังไม่มีอยู่
+  --   → ต้องสร้าง parent object ให้ครบก่อนเสมอ
+  IF jsonb_typeof(v_game->'hasDiscardedThisTurn') IS DISTINCT FROM 'object' THEN
+    v_game := jsonb_set(v_game, '{hasDiscardedThisTurn}', '{}'::JSONB);
+  END IF;
+  IF jsonb_typeof(v_game->'pickedFromDiscard') IS DISTINCT FROM 'object' THEN
+    v_game := jsonb_set(v_game, '{pickedFromDiscard}', '{}'::JSONB);
+  END IF;
+  IF jsonb_typeof(v_game->'spetoOrigin') IS DISTINCT FROM 'object' THEN
+    v_game := jsonb_set(v_game, '{spetoOrigin}', '{}'::JSONB);
+  END IF;
+  IF jsonb_typeof(v_game->'spettoPenalty') IS DISTINCT FROM 'object' THEN
+    v_game := jsonb_set(v_game, '{spettoPenalty}', '{}'::JSONB);
+  END IF;
+  IF jsonb_typeof(v_game->'spettoPenaltyDone') IS DISTINCT FROM 'object' THEN
+    v_game := jsonb_set(v_game, '{spettoPenaltyDone}', '{}'::JSONB);
+  END IF;
 
   -- DRAW_DECK
   IF p_action = 'DRAW_DECK' THEN
@@ -257,7 +277,7 @@ BEGIN
     v_melds := COALESCE(v_melds, '{}'::JSONB);
     v_melds := jsonb_set(v_melds, ARRAY[p_player_id], COALESCE(v_melds->p_player_id, '[]'::JSONB) || jsonb_build_array(to_jsonb(v_meld_arr)));
     v_hands := jsonb_set(v_hands, ARRAY[p_player_id], to_jsonb(v_new_hand));
-    v_is_first_meld := NOT COALESCE((v_has_fm->p_player_id)::BOOLEAN, false);
+    v_is_first_meld := NOT COALESCE((v_has_fm->>p_player_id)::BOOLEAN, false);
     v_has_fm := v_has_fm || jsonb_build_object(p_player_id, true);
     -- FIX 4 (ต่อ): เกิดแล้ว → ล้างรายการใบที่หยิบ (ทั้งที่เกิดไปแล้วและที่เหลือในมือ)
     v_game := jsonb_set(v_game, ARRAY['pickedFromDiscard', p_player_id], '[]'::JSONB);
@@ -266,13 +286,18 @@ BEGIN
     v_game := jsonb_set(v_game, '{hasFirstMeld}', v_has_fm);
     -- FIX S2 (v39): สเปโตเข้า "ชุดเกิด" → หัก 100 แต้ม
     --   ผู้เสีย = คนที่ทิ้งสเปโตนี้มาก่อน (game.spetoOrigin) ถ้าไม่มี → คนที่เกิดเอง
+    --   FIX v39.1: flag game.spettoPenaltyDone[code] กันหักซ้ำ (server + client อาจหักพร้อมกัน)
     v_game := jsonb_set(v_game, '{spettoPenalty}', COALESCE(v_game->'spettoPenalty', '{}'::JSONB));
+    v_game := jsonb_set(v_game, '{spettoPenaltyDone}', COALESCE(v_game->'spettoPenaltyDone', '{}'::JSONB));
     FOR i IN 1..array_length(v_meld_arr, 1) LOOP
       IF v_meld_arr[i] IN ('2♣','Q♠') THEN
-        v_speto_loser := COALESCE(v_game->'spetoOrigin'->v_meld_arr[i], p_player_id);
-        v_game := jsonb_set(v_game, ARRAY['spettoPenalty', v_speto_loser],
-          to_jsonb(COALESCE((v_game->'spettoPenalty'->v_speto_loser)::INT,0) + 100));
-        v_game := jsonb_set(v_game, ARRAY['spetoOrigin', v_meld_arr[i]], 'null');
+        IF NOT COALESCE((v_game->'spettoPenaltyDone'->>v_meld_arr[i])::BOOLEAN, false) THEN
+          v_speto_loser := COALESCE(v_game->'spetoOrigin'->>v_meld_arr[i], p_player_id);
+          v_game := jsonb_set(v_game, ARRAY['spettoPenalty', v_speto_loser],
+            to_jsonb(COALESCE((v_game->'spettoPenalty'->>v_speto_loser)::INT,0) + 100));
+          v_game := jsonb_set(v_game, ARRAY['spettoPenaltyDone', v_meld_arr[i]], 'true');
+        END IF;
+        v_game := v_game #- ARRAY['spetoOrigin', v_meld_arr[i]];
       END IF;
     END LOOP;
     v_game := jsonb_set(v_game, '{version}', to_jsonb(v_new_version));
@@ -286,7 +311,7 @@ BEGIN
     IF v_card_arr IS NULL THEN RETURN jsonb_build_object('ok', false, 'error', 'HAND_NOT_FOUND'); END IF;
     v_old := ARRAY(SELECT jsonb_array_elements_text(v_card_arr));
     IF p_card_code != ALL(v_old) THEN RETURN jsonb_build_object('ok', false, 'error', 'CARD_NOT_IN_HAND'); END IF;
-    IF NOT ((v_has_fm->p_player_id)::BOOLEAN) THEN RETURN jsonb_build_object('ok', false, 'error', 'MUST_MELD_FIRST'); END IF;
+    IF NOT COALESCE((v_has_fm->>p_player_id)::BOOLEAN, false) THEN RETURN jsonb_build_object('ok', false, 'error', 'MUST_MELD_FIRST'); END IF;
     v_p_meld_idx := p_target_meld_idx;
     -- FIX 2: กัน meld index หลุด/เกินช่วง (เดิมจะ error ตอน jsonb_array_elements_text)
     IF v_p_meld_idx < 0 OR v_p_meld_idx >= jsonb_array_length(COALESCE(v_melds->p_target_pid, '[]'::JSONB)) THEN
@@ -305,11 +330,17 @@ BEGIN
     v_game := jsonb_set(v_game, '{hands}', v_hands);
     v_game := jsonb_set(v_game, '{melds}', v_melds);
     -- FIX S2 (v39): สเปโตถูก "ฝาก" ลงชุด → หัก 100 แต้ม (ผู้เสีย = คนที่ทิ้ง ถ้าไม่มี → คนที่ฝาก)
+    --   FIX v39.1: flag กันหักซ้ำ (server + client อาจหักพร้อมกัน)
     IF p_card_code IN ('2♣','Q♠') THEN
-      v_speto_loser := COALESCE(v_game->'spetoOrigin'->p_card_code, p_player_id);
-      v_game := jsonb_set(v_game, ARRAY['spettoPenalty', v_speto_loser],
-        to_jsonb(COALESCE((v_game->'spettoPenalty'->v_speto_loser)::INT,0) + 100));
-      v_game := jsonb_set(v_game, ARRAY['spetoOrigin', p_card_code], 'null');
+      v_game := jsonb_set(v_game, '{spettoPenalty}', COALESCE(v_game->'spettoPenalty', '{}'::JSONB));
+      v_game := jsonb_set(v_game, '{spettoPenaltyDone}', COALESCE(v_game->'spettoPenaltyDone', '{}'::JSONB));
+      IF NOT COALESCE((v_game->'spettoPenaltyDone'->>p_card_code)::BOOLEAN, false) THEN
+        v_speto_loser := COALESCE(v_game->'spetoOrigin'->>p_card_code, p_player_id);
+        v_game := jsonb_set(v_game, ARRAY['spettoPenalty', v_speto_loser],
+          to_jsonb(COALESCE((v_game->'spettoPenalty'->>v_speto_loser)::INT,0) + 100));
+        v_game := jsonb_set(v_game, ARRAY['spettoPenaltyDone', p_card_code], 'true');
+      END IF;
+      v_game := v_game #- ARRAY['spetoOrigin', p_card_code];
     END IF;
     v_game := jsonb_set(v_game, '{version}', to_jsonb(v_new_version));
     UPDATE rooms SET game = v_game, version = v_new_version WHERE id = p_game_id;
@@ -325,7 +356,7 @@ BEGIN
     v_players := ARRAY(SELECT jsonb_array_elements_text(v_game->'playerOrder'));
     v_scores := COALESCE(v_game->'scores', '{}'::JSONB);
     v_round_scores := '{}'::JSONB;
-    v_head_pts := COALESCE((v_game->'headPoints')::INT, 0);
+    v_head_pts := COALESCE((v_game->>'headPoints')::INT, 0);
     -- คำนวณแต้มรอบนี้ของทุกคน
     FOR i IN 1..array_length(v_players, 1) LOOP
       DECLARE
@@ -349,29 +380,29 @@ BEGIN
         v_pm := COALESCE(v_hands->v_pid, '[]'::JSONB);
         IF NOT (v_pid = p_player_id AND jsonb_array_length(v_pm) = 0) THEN
           FOR j IN 0..jsonb_array_length(v_pm)-1 LOOP
-            v_hand_pts := v_hand_pts + rummy_card_points(v_pm->j);
+            v_hand_pts := v_hand_pts + rummy_card_points(v_pm->>j);
           END LOOP;
-          IF NOT COALESCE((v_has_fm->v_pid)::BOOLEAN, false) THEN
+          IF NOT COALESCE((v_has_fm->>v_pid)::BOOLEAN, false) THEN
             v_hand_pts := v_hand_pts * 2;
           END IF;
         END IF;
-        -- โทษสเปโต (หยิบหรือทิ้ง 2♣/Q♠) = -100
-        v_penalty := COALESCE((v_game->'spettoPenalty'->v_pid)::INT, 0);
+        -- โทษสเปโต (สเปโตเข้าชุดเกิด/ฝาก) = -100
+        v_penalty := COALESCE((v_game->'spettoPenalty'->>v_pid)::INT, 0);
         v_round_scores := jsonb_set(v_round_scores, ARRAY[v_pid],
           to_jsonb(v_meld_pts - v_hand_pts - v_penalty));
       END;
     END LOOP;
     -- โบนัสคนที่น็อค: เกิดแล้ว 50 / ยังไม่เกิด 100 + headPoints
-    v_score_diff := CASE WHEN COALESCE((v_has_fm->p_player_id)::BOOLEAN, false) THEN 50 ELSE 100 END + v_head_pts;
+    v_score_diff := CASE WHEN COALESCE((v_has_fm->>p_player_id)::BOOLEAN, false) THEN 50 ELSE 100 END + v_head_pts;
     v_round_scores := jsonb_set(v_round_scores, ARRAY[p_player_id],
-      to_jsonb(COALESCE((v_round_scores->p_player_id)::INT, 0) + v_score_diff));
+      to_jsonb(COALESCE((v_round_scores->>p_player_id)::INT, 0) + v_score_diff));
     -- คะแนนสะสม = เดิม + รอบนี้
     v_total_scores := '{}'::JSONB;
     FOR i IN 1..array_length(v_players, 1) LOOP
       DECLARE v_tpid TEXT := v_players[i];
       BEGIN
         v_total_scores := jsonb_set(v_total_scores, ARRAY[v_tpid],
-          to_jsonb(COALESCE((v_scores->v_tpid)::INT, 0) + COALESCE((v_round_scores->v_tpid)::INT, 0)));
+          to_jsonb(COALESCE((v_scores->>v_tpid)::INT, 0) + COALESCE((v_round_scores->>v_tpid)::INT, 0)));
       END;
     END LOOP;
     -- ผู้ชนะ: ถ้ามีใครสะสม >= 500 → คนที่สะสมน้อยที่สุดชนะ (เหมือน handleKnockout() ใน client)
@@ -380,7 +411,7 @@ BEGIN
     FOR i IN 1..array_length(v_players, 1) LOOP
       DECLARE v_tpid TEXT := v_players[i]; v_ttot INTEGER;
       BEGIN
-        v_ttot := COALESCE((v_total_scores->v_tpid)::INT, 0);
+        v_ttot := COALESCE((v_total_scores->>v_tpid)::INT, 0);
         IF v_ttot >= 500 THEN
           v_win_pid := 'PENDING';   -- มีคนถึง 500 แล้ว
         END IF;
@@ -391,7 +422,7 @@ BEGIN
       FOR i IN 1..array_length(v_players, 1) LOOP
         DECLARE v_tpid TEXT := v_players[i]; v_ttot INTEGER;
         BEGIN
-          v_ttot := COALESCE((v_total_scores->v_tpid)::INT, 0);
+          v_ttot := COALESCE((v_total_scores->>v_tpid)::INT, 0);
           IF v_min_total IS NULL OR v_ttot < v_min_total THEN
             v_min_total := v_ttot;
             v_win_pid := v_tpid;
