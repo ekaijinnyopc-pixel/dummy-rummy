@@ -922,6 +922,7 @@ async function returnPickedCards() {
 var selectedCards = [];
 var myHandOrder = null;   // ลำดับการแสดงไพ่ (ปุ่มจัดไพ่อัตโนมัติ)
 var roomLevel = 1;          // ระดับห้อง (0.5 / 0.75 / 1 / 3) — เก็บใน game JSONB
+var roomTurnTime = 120;     // เวลาต่อตา (วินาที) 30 / 60 / 120 — เก็บใน players ของห้อง
 var myTurn = false;
 var hasDiscardedThisTurn = false;  // ต้องทิ้งไพ่ 1 ใบก่อนจบตา (บังคับจาก server ด้วย)
 var pendingPickedCodes = [];   // codes picked from discard this turn (must meld)
@@ -958,9 +959,19 @@ function showScreen(id) {
 }
 function delay(ms) { return new Promise(function(r){ setTimeout(r, ms); }); }
 
-// --- PLAYER TURN TIMER: 120s total, resets on any action ---
+// --- PLAYER TURN TIMER: ค่ามาจากห้อง (30/60/120 วิ) — reset ทุก action ---
 var TIMER_MAX = 120;
 var TIMER_CIRC = 119.4; // 2*PI*19
+
+// ดึงเวลาต่อตาของห้องปัจจุบัน (วินาที)
+function getTurnLimit() {
+  try {
+    var t = (currentGame && currentGame.turnTimeLimit) || roomTurnTime || 120;
+    t = parseInt(t);
+    if (t !== 30 && t !== 60 && t !== 120) return 120;
+    return t;
+  } catch(e) { return 120; }
+}
 
 function updateTimerRing() {
   try {
@@ -968,19 +979,20 @@ function updateTimerRing() {
     var arc = document.getElementById('timer-arc');
     var txt = document.getElementById('timer-text');
     if (!ring || !arc || !txt) return;
+    var max = getTurnLimit();
     var left = Math.max(0, playerTimeLeft);
     // เต็มวง = เวลาเต็ม, ว่าง = หมดเวลา
-    arc.style.strokeDashoffset = String(TIMER_CIRC * (1 - (left / TIMER_MAX)));
+    arc.style.strokeDashoffset = String(TIMER_CIRC * (1 - (left / max)));
     txt.textContent = left > 0 ? String(left) : '0';
     ring.classList.remove('warn', 'crit');
-    if (left <= 10) ring.classList.add('crit');
-    else if (left <= 30) ring.classList.add('warn');
+    if (left <= Math.max(5, Math.round(max * 0.1))) ring.classList.add('crit');
+    else if (left <= Math.max(15, Math.round(max * 0.25))) ring.classList.add('warn');
   } catch(e) {}
 }
 
 function startPlayerTimer() {
   stopPlayerTimer();
-  playerTimeLeft = TIMER_MAX;
+  playerTimeLeft = getTurnLimit();
   updateTimerRing();
   turnTimerInterval = setInterval(function() {
     if (modalOpen) return; // pause while modal open
@@ -1102,8 +1114,9 @@ function checkStalledTurn() {
     noteTurnChange(pid);
     if (pid === myPlayerId) return;            // ของเรา → timer ของเราจัดการ
     if (pid.indexOf('bot_') === 0) return;      // บอทมีระบบ timeout ของตัวเอง
+    var limitMs = getTurnLimit() * 1000;
     var elapsed = Date.now() - turnWatchSince;
-    if (elapsed < PLAYER_TIMEOUT + TIMEOUT_GRACE) return;
+    if (elapsed < limitMs + TIMEOUT_GRACE) return;
     console.warn('[TIMEOUT] ผู้เล่น', pid, 'ค้างเกิน', Math.round(elapsed/1000), 'วิ → ระบบเล่นแทน');
     autoPlayTimedOutPlayer(pid, false);
   } catch(e) {}
@@ -1175,11 +1188,13 @@ async function createRoom() {
     var totalPlayers = parseInt(document.getElementById('player-count').value) || 4;
     var lvlEl = document.getElementById('room-level');
     roomLevel = lvlEl ? (parseFloat(lvlEl.value) || 1) : 1;
+    var ttEl = document.getElementById('turn-time');
+    roomTurnTime = ttEl ? (parseInt(ttEl.value) || 120) : 120;
     roomCode = genRoomCode();
     myName = name;
     myPlayerId = 'p_' + Math.random().toString(36).substr(2, 9);
     var players = {};
-    players[myPlayerId] = { id: myPlayerId, name: name, isBot: false, isHost: true };
+    players[myPlayerId] = { id: myPlayerId, name: name, isBot: false, isHost: true, turnTime: roomTurnTime };
     var _data = await db.from('rooms').upsert({ id: roomCode, code: roomCode, players: players, status: 'lobby', totalplayers: totalPlayers });
     if (_data.error) { notify('❌ สร้างห้องไม่สำเร็จ'); return; }
     showScreen('lobby-screen');
@@ -1208,6 +1223,15 @@ async function joinRoom() {
     var _fresh = await db.from('rooms').select('id,players,version,totalplayers').eq('id', code).single();
     if (!_fresh.data) { notify('❌ ไม่พบห้อง'); return; }
     var currentPlayers = _fresh.data.players || {};
+    // FIX v48: อ่าน "เวลาต่อตา" ที่ผู้สร้างห้องเลือกไว้ (เก็บใน entry ของ host)
+    var _hostTT = 0;
+    for (var _hk in currentPlayers) {
+      if (currentPlayers[_hk] && currentPlayers[_hk].isHost && currentPlayers[_hk].turnTime) {
+        _hostTT = parseInt(currentPlayers[_hk].turnTime) || 120;
+        break;
+      }
+    }
+    if (_hostTT) roomTurnTime = _hostTT;
     if (currentPlayers[myPlayerId]) { notify('คุณอยู่ในห้องแล้ว'); return; }
     var currentKeys = Object.keys(currentPlayers);
     if (currentKeys.length >= (_fresh.data.totalplayers || 4)) { notify('❌ ห้องเต็มแล้ว'); return; }
@@ -1260,6 +1284,13 @@ async function startGame() {
     var _data = await db.from('rooms').select('players').eq('id', roomCode).single();
     if (!_data.data) return;
     var players = _data.data.players || {};
+    // FIX v48: อ่าน "เวลาต่อตา" จาก entry ของ host (ผู้สร้างห้อง) เสมอ
+    //   → ไม่ว่าใครกด "เริ่มเกม" ก็ได้ค่าเดียวกัน
+    var _ht = 0;
+    for (var _hk in players) {
+      if (players[_hk] && players[_hk].isHost && players[_hk].turnTime) { _ht = parseInt(players[_hk].turnTime) || 120; break; }
+    }
+    if (_ht) roomTurnTime = _ht;
     var playerIds = Object.keys(players);
     if (playerIds.length < 2) { notify('ต้องมีอย่างน้อย 2 คน'); return; }
     // 2 players → 11 cards, 3 → 9 cards, 4 → 7 cards
@@ -1293,6 +1324,7 @@ async function startGame() {
       deckEmpty: false,
       pickedFromDiscard: {},
       level: roomLevel,
+      turnTimeLimit: roomTurnTime,
       version: 1
     };
     for (var mi = 0; mi < playerIds.length; mi++) {
@@ -2638,6 +2670,8 @@ async function quickPlay() {
     if (!db) { notify('กรุภาสักครู่... กดอีกครั้ง'); return; }
     var lvlEl = document.getElementById('room-level');
     roomLevel = lvlEl ? (parseFloat(lvlEl.value) || 1) : 1;
+    var ttEl = document.getElementById('turn-time');
+    roomTurnTime = ttEl ? (parseInt(ttEl.value) || 120) : 120;
     var total = 4;
     var pcEl = document.getElementById('player-count');
     if (pcEl && pcEl.value === '2') total = 2;
@@ -2645,7 +2679,7 @@ async function quickPlay() {
     myName = name;
     myPlayerId = 'p_' + Math.random().toString(36).substr(2, 9);
     var players = {};
-    players[myPlayerId] = { id: myPlayerId, name: name, isBot: false, isHost: true };
+    players[myPlayerId] = { id: myPlayerId, name: name, isBot: false, isHost: true, turnTime: roomTurnTime };
     var botIdx = 0;
     for (var bi = 1; bi < total; bi++) {
       var bid = 'bot_' + bi;
@@ -2668,9 +2702,17 @@ async function quickPlay() {
 function updateLobbyLevelLabel() {
   try {
     var el = document.getElementById('lobby-level');
-    if (!el) return;
-    var lv = roomLevel || 1;
-    el.innerHTML = '🪙 ระดบห้อง: <b>' + lv + '</b>';
+    if (el) {
+      var lv = roomLevel || 1;
+      el.innerHTML = '🪙 ระดบห้อง: <b>' + lv + '</b>';
+    }
+    // FIX v48: แสดงเวลาต่อตาที่เลือกไว้
+    var el2 = document.getElementById('lobby-turntime');
+    if (el2) {
+      var tt = getTurnLimit();
+      var txt = tt >= 60 ? Math.round(tt / 60) + ' นาที' : tt + ' วินาที';
+      el2.innerHTML = '⏱ เวลาต่อตา: <b>' + txt + '</b>';
+    }
   } catch(e) {}
 }
 

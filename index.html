@@ -777,6 +777,15 @@ body {
       </select>
       <div style="font-size:0.78rem;color:#8b8b8b;margin-top:6px">เลือกตามตารางห้องของเกมต้นแบบ</div>
     </div>
+    <div class="form-row">
+      <label>เวลาต่อตา</label>
+      <select id="turn-time">
+        <option value="30">⏱ 30 วินาที</option>
+        <option value="60">⏱ 1 นาที</option>
+        <option value="120" selected>⏱ 2 นาที</option>
+      </select>
+      <div style="font-size:0.78rem;color:#8b8b8b;margin-top:6px">หมดเวลาแล้วระบบจะจั่ว+ทิ้งไพ่ให้อัตโนมัติ</div>
+    </div>
     <button class="btn btn-primary" style="width:100%" onclick="createRoom()">🎮 สร้างห้อง</button>
     <button class="btn btn-secondary" style="width:100%;margin-top:10px" onclick="quickPlay()">⚡ เล่นเร็ว (เติมบอทให้)</button>
   </div>
@@ -813,6 +822,7 @@ body {
       <button class="btn btn-secondary" onclick="shareRoom()" style="padding:8px 14px;font-size:0.85rem">📤 แชร์ลิงก์</button>
     </div>
     <div id="lobby-level" style="margin-top:10px;font-size:0.85rem;color:var(--gold)"></div>
+    <div id="lobby-turntime" style="margin-top:4px;font-size:0.85rem;color:var(--gold)"></div>
   </div>
 
   <div class="player-grid" id="player-list"></div>
@@ -958,7 +968,7 @@ body {
 
 <script src="supabase.js?v=1"></script>
 <!-- FIX v41: กติกาโทษ -100 แบบใหม่ (2.1/2.2/2.3) — pure functions (ใช้เตือน UI + ใช้เป็นต้นแบบเดียวกับ SQL) -->
-<script src="speto-rules.js?v=47"></script>
-<script src="game-core.js?v=47"></script>
+<script src="speto-rules.js?v=48"></script>
+<script src="game-core.js?v=48"></script>
 </body>
 </html>
