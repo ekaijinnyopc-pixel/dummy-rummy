@@ -252,3 +252,29 @@ Action bar           ~10%   ← ปุ่มบางเกินไป บน�
 
 > ✅ **พี่เอเคลียร์แล้ว — จินลงมือทำและ deploy เรียบร้อย** (2026-10-24 02:20)
 
+
+---
+
+## ⏱️ FIX v48 — เลือกเวลาต่อตา (30 วิ / 1 นาที / 2 นาที)
+> พี่เอสั่ง 2026-10-24 02:24 — commit `6a78c7a` · deploy `v48`
+
+### ✅ สิ่งที่ทำ
+- หน้าสร้างห้องมี `<select id="turn-time">` → ตัวเลือก `30` / `60` / `120` (default 120)
+- เก็บค่าไว้ 2 ที่ (ไม่ต้องเพิ่ม schema):
+  - `rooms.players[hostId].turnTime` → ผู้สร้างห้องตั้งค่า
+  - `rooms.game.turnTimeLimit` → ตั้งตอน `startGame()` (server-authoritative ตอนเริ่มเกม)
+- `getTurnLimit()` → ดึงค่าที่ถูกต้อง: `currentGame.turnTimeLimit` → `roomTurnTime` → 120
+- Timer วงแหวน (`updateTimerRing`) + เกณฑ์เตือน (warn/crit) → **dynamic ตามเวลาที่เลือก**
+- `startPlayerTimer()` → reset เป็น `getTurnLimit()` ทุกตา
+- `checkStalledTurn()` (watchdog) → ใช้ `getTurnLimit() * 1000` แทนค่าคงที่ 120 วิ
+- ผู้ที่เข้าร่วมห้อง (join) อ่านค่าจาก entry ของ host → ได้เวลาเดียวกันทุกคน
+- หน้าห้อง (lobby) แสดง `⏱ เวลาต่อตา: X นาที/วินาที` ใต้บรรทัดระดับห้อง
+
+### 🧪 ผลทดสอบ
+- `node --check game-core.js` → SYNTAX OK
+- `node test-speto-rules.js` → ผ่าน 65 / ไม่ผ่าน 0
+- live ยืนยัน `game-core.js?v=48` (มี `getTurnLimit` 5 จุด) ✅
+
+### 📌 หมายเหตุ
+- ค่าเวลา **ยังเป็น client-side** (ตัวจับเวลารันในเบราว์เซอร์) — server ไม่ได้บังคับเวลา
+- ถ้าต้องการให้ **server บังคับเวลา 100%** (คนหลุดเน็ตแล้วไม่มีใครช่วยเล่นแทน) ต้องเพิ่ม SQL patch ฝั่ง Supabase
