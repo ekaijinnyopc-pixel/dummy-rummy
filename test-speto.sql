@@ -211,5 +211,40 @@ SELECT mk_room('t11', ARRAY['p1','p2'],
 SELECT (r->>'error') AS err, (r->'game'->'spetoPending') AS pending, (r->'game'->'spettoPenalty') AS spetto
 FROM (SELECT play_turn('t11','p1','DISCARD', p_card_code => 'Q♠', p_expected_version => 0) AS r) s;
 
+\echo ''
+\echo '=============================================================='
+\echo ' T12: ลำดับจริง DISCARD → MELD → DISCARD → KNOCK (ห้องเดียว)'
+\echo '      p1 ทิ้ง 2♣ (มี 2♠ อยู่กองทิ้ง = เกี่ยว) → p2 เกิด 2♣ ภายใน 1 รอบ'
+\echo '      → คนทิ้ง (p1) เสีย 100 → ตอนน็อคต้องเห็น -100 ในคะแนนรอบ'
+\echo '=============================================================='
+SELECT mk_room('t12', ARRAY['p1','p2'],
+  jsonb_build_object('p1', '["2♣"]'::jsonb, 'p2', '["2♥","2♦","5♣"]'::jsonb),
+  jsonb_build_object('p1', '[]'::jsonb, 'p2', '[]'::jsonb),
+  ARRAY['2♠'], 'p1');
+UPDATE rooms SET game = jsonb_set(game, '{hasFirstMeld}', '{"p1":false,"p2":true}'::jsonb) WHERE id = 't12';
+
+\echo '--- 1) p1 DISCARD 2♣ → เกิด pending (ยังไม่หัก) ---'
+SELECT (r->>'error') AS err, (r->>'penalty') AS penalty, (r->'game'->'spettoPenalty') AS spetto,
+       (r->'game'->'spetoPending') AS pending, (r->'game'->>'turnPlayerId') AS next_turn,
+       (r->'game'->>'turnSeq') AS turn_seq
+FROM (SELECT play_turn('t12','p1','DISCARD', p_card_code => '2♣', p_expected_version => 0) AS r) s;
+
+\echo '--- 2) p2 หยิบ 2♣ จากกองทิ้งแล้ว MELD (ตอง 2) → คนทิ้ง p1 เสีย 100 ---'
+UPDATE rooms SET game = jsonb_set(game, ARRAY['hands','p2'], '["2♥","2♦","5♣","2♣"]'::jsonb) WHERE id = 't12';
+SELECT (r->>'error') AS err, (r->'game'->'spettoPenalty') AS spetto,
+       (r->'game'->'spetoPending') AS pending, (r->'game'->>'turnSeq') AS turn_seq
+FROM (SELECT play_turn('t12','p2','MELD', p_meld_codes => '["2♣","2♥","2♦"]', p_expected_version => 0) AS r) s;
+
+\echo '--- 3) p2 DISCARD 5♣ → เดินตา (turnSeq++) ---'
+SELECT (r->>'error') AS err, (r->'game'->>'turnPlayerId') AS next_turn,
+       (r->'game'->>'turnSeq') AS turn_seq, (r->'game'->'spettoPenalty') AS spetto
+FROM (SELECT play_turn('t12','p2','DISCARD', p_card_code => '5♣', p_expected_version => 0) AS r) s;
+
+\echo '--- 4) p1 KNOCK (มือว่าง) → ต้องหักโทษ 100 อยู่ในคะแนนรอบ ---'
+SELECT (r->>'error') AS err, (r->'round_scores') AS round_scores,
+       (r->'game'->'spettoPenalty') AS spetto, (r->>'winner') AS winner
+FROM (SELECT play_turn('t12','p1','KNOCK', p_expected_version => 0) AS r) s;
+SELECT show_state('t12');
+
 DROP FUNCTION IF EXISTS show_state(TEXT);
 DROP FUNCTION IF EXISTS mk_room(TEXT, TEXT[], JSONB, JSONB, TEXT[], TEXT);

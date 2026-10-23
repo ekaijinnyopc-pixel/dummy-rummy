@@ -891,7 +891,9 @@ BEGIN
     -- FIX S3: เขียนผู้ชนะ + คะแนนสะสมไว้ทั้ง column และ game JSONB
     v_game := jsonb_set(v_game, '{scores}', v_total_scores);
     v_game := jsonb_set(v_game, '{roundScores}', v_round_scores);
-    v_game := jsonb_set(v_game, '{winner}', to_jsonb(v_win_pid));
+    -- FIX v41: jsonb_set(target, path, NULL) → NULL (ลบ game ทิ้งทั้งก้อน!)
+    --   → ต้องแปลง NULL ให้เป็น JSON null ก่อน (กรณีไม่มีใครสะสมถึง 500 = ยังไม่จบเกม)
+    v_game := jsonb_set(v_game, '{winner}', COALESCE(to_jsonb(v_win_pid), 'null'::JSONB));
     v_game := jsonb_set(v_game, '{totalScores}', v_total_scores);
     v_game := jsonb_set(v_game, '{status}', '"ended"');
     v_game := jsonb_set(v_game, '{version}', to_jsonb(v_new_version));
