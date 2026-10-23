@@ -1784,12 +1784,20 @@ function getMeldOptions(pickedCodes, selCodes) {
   }
 
   if (selCodes && selCodes.length >= 3) {
-    var selKey = selCodes.slice().sort().join('|');
-    var exact = all.filter(function(m){ return m.cards.map(function(c){ return c.code; }).sort().join('|') === selKey; });
-    if (exact.length > 0) { res.melds = exact; return res; }
-    // เลือกเกินขนาด → ลองหาชุดที่อยู่ในไพ่ที่เลือกทั้งหมด
+    // FIX v49: ตรวจ "ไพ่ที่เลือก" โดยตรงก่อน (สำคัญ!)
+    //   เดิมเทียบกับ findMelds() ซึ่งคืนเฉพาะชุด "ใหญ่สุด" → เลือก 3 ใบจาก 4 ใบเลขเดียวกัน
+    //   จะไม่เจอชุด (มีแต่ชุด 4 ใบ) → "เกิดชุดที่สองไม่ได้"
+    //   ตอนนี้ตรวจไพ่ที่เลือกโดยตรง → ชุดย่อยที่ถูกต้องก็เกิดได้
+    var selCards = codesToCards(selCodes);
+    var selType = (typeof SpetoRules !== 'undefined') ? SpetoRules.meldType(selCodes) : null;
+    if (selType === 'set' || selType === 'run') {
+      res.melds = [{ type: selType, cards: selCards }];
+      return res;
+    }
+    // ไม่ผ่าน → ลองหาชุดที่อยู่ในไพ่ที่เลือกทั้งหมด (เผื่อเลือกเกิน)
     var within = all.filter(function(m){ return m.cards.every(function(c){ return selCodes.indexOf(c.code) >= 0; }); });
     if (within.length > 0) { res.melds = within; return res; }
+    res.melds = [];   // FIX v49: ไม่ตรงต้องไม่มีชุด (เดิมค้างเป็น "ทุกชุดในมือ" → หลอกผู้เล่น)
     var selSpeto = selCodes.filter(function(c){ return isSpetoCode(c); });
     res.emptyReason = 'ไพ่ที่คุณเลือกยังไม่ใช่ชุดที่เกิดได้ — ชุดตองต้องเลขเดียวกัน 3+ ใบ (คนละสำเนา) · ชุดเรียงต้องสีเดียวกัน เลขติดกัน 3+ ใบ'
       + (selSpeto.length ? ' · สเปโต (' + selSpeto.join(', ') + ') เข้าชุดเรียงไม่ได้' : '');
@@ -2648,7 +2656,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v49 Loaded! (FIX v49 — แยกปุ่ม เก็บเกิด/วาง/ฝาก + อธิบายเหตุผลปุ่ม disabled)');
+  console.log('[DummyRummy] v50 Loaded! (FIX v50 — แก้บั๊กเกิดชุดย่อย/ชุดที่สอง + เทสต์ flow เกิด)');
   // FIX v46: แสดงการ์ด "ห้องที่คุณอยู่" บนหน้าแรก (ถ้ามี session ค้าง)
   try { refreshActiveRoomCard(); } catch(e) {}
   // Cleanup: delete ONLY empty lobby rooms older than 1 hour — safe for active rooms
