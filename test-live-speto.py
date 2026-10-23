@@ -206,17 +206,17 @@ g = get_game('lt13')
 pen, pend, seq, dd = state(g)
 print('   หลังทิ้ง: penalty =', pen, ' pending =', pend)
 ok('ทันทีโดน -100 (2.1)', pen.get('p1') == 100, pen)
-ok('pending จำว่า alreadyPenalized', pend.get('2♣', {}).get('alreadyPenalized') is True, pend)
-# ตอนนี้ p2 เกิด 2♣ ต่อชุดของ p2 เอง? ใช้ p2 meld 2♠2♥2♦ ไป → ไม่ใช่ 2♣ → ไม่โดน
+# ตอนนี้ p2 เกิด 2♠2♥2♦ (ไม่ใช่ 2♣) → ยังไม่โดนโทษเพิ่ม (2.3 ยังค้าง)
 r = turn('lt13', 'p2', 'PICK_DISCARD', p_discard_index=0)
 r = turn('lt13', 'p2', 'MELD', p_meld_codes=json.dumps(['2♠', '2♥', '2♦']))
 g = get_game('lt13')
 pen, pend, seq, dd = state(g)
-print('   หลัง MELD: penalty =', pen, ' pending =', pend)
-ok('FIX v41.2: MELD แล้วหักเพิ่มอีก 100 (รวม 200)', pen.get('p1') == 200, pen)
+print('   หลัง MELD (ไม่ใช่ 2♣): penalty =', pen, ' pending =', pend)
+ok('MELD ที่ไม่ใช่สเปโตใบนั้น → ไม่หักเพิ่ม', pen.get('p1') == 100, pen)
+ok('pending ยังค้าง', '2♣' in pend, pend)
 
 # --- T14: FIX v41.1 — 2.3 ซ้อนกับ 2.1 แล้ว MELD ไพ่สเปโตใบนั้นจริง → ยังเป็น 100 ---
-print('\nT14: FIX v41.1 — 2.1 + 2.3 ซ้อนกัน แล้วมีคน MELD 2♣ → รวม 100 เดียว (ไม่ใช่ 200)')
+print('\nT14: FIX v41.2 — 2.1 + 2.3 ซ้อนกัน แล้วมีคน MELD 2♣ → รวม 200')
 mk_room('lt14', ['p1', 'p2'], {'p1': ['2♣'], 'p2': ['2♥', '2♦']},
         {'p1': [], 'p2': [['2♥', '2♦', '2♠']]}, ['2♠'], 'p1')
 turn('lt14', 'p1', 'DISCARD', p_card_code='2♣')
