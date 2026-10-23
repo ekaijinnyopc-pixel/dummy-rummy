@@ -591,6 +591,13 @@ async function rpcPlayTurn(action, opts) {
         notify('ไม่ใช่ตาของคุณ!');
       } else if (data && data.error === 'MUST_DISCARD') {
         notify('❌ ต้องทิ้งไพ่ 1 ใบก่อนจบตา!');
+      } else if (data && data.error === 'INVALID_MELD') {
+        // FIX v50: server ตรวจชุดเกิดแล้ว (rummy_meld_type) → อธิบายให้ผู้เล่นเข้าใจ
+        notify('❌ ไพ่ที่เลือกไม่ใช่ชุดที่เกิดได้ (ต้องเป็นชุดตองหรือชุดเรียง)');
+        openMeldModal();
+      } else if (data && data.error === 'MUST_MELD_PICKED') {
+        notify('⚠️ ต้องเกิดใบที่หยิบจากกองทิ้งก่อน!');
+        openMeldModal();
       } else if (data && data.error === 'ROOM_NOT_FOUND') {
         // FIX v42: rooms.game เป็น NULL → พยายามกู้ห้องแล้วลองใหม่
         console.warn('[RPC] ROOM_NOT_FOUND — game เป็น NULL, กำลังกู้ห้อง');
@@ -2656,7 +2663,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v50 Loaded! (FIX v50 — แก้บั๊กเกิดชุดย่อย/ชุดที่สอง + เทสต์ flow เกิด)');
+  console.log('[DummyRummy] v51 Loaded! (FIX v51 — client handle error INVALID_MELD/MUST_MELD_PICKED + SQL validate ชุดเกิด)');
   // FIX v46: แสดงการ์ด "ห้องที่คุณอยู่" บนหน้าแรก (ถ้ามี session ค้าง)
   try { refreshActiveRoomCard(); } catch(e) {}
   // Cleanup: delete ONLY empty lobby rooms older than 1 hour — safe for active rooms
