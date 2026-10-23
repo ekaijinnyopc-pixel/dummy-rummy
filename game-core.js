@@ -32,6 +32,12 @@ var RANKS = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
 var RANK_ORDER = {'A':1,'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'10':10,'J':11,'Q':12,'K':13};
 var RANK_ORDER_AHIGH = {'A':14,'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'10':10,'J':11,'Q':12,'K':13};
 
+// FIX v41 (2026-10-23): กติกาโทษ -100 แบบใหม่ (3 กรณี) — SERVER เป็นเจ้าของการคำนวณโทษ
+//   (play_turn ใน Supabase) → client หักแต้มเองไม่ได้ มีแค่ "เตือน" ผู้เล่น
+//   2.1 ทิ้งดัมมี่ / 2.2 ตีเต็ม → หักทันทีตอนทิ้ง (รวมกันไม่เกิน 100)
+//   2.3 สเปโต → ค้างรอ 1 รอบ ถ้ามีคน MELD ไพ่ใบนั้นคนทิ้งเสีย 100
+var MAX_PENALTY_PER_DISCARD = 100;
+
 // --- DECK ---
 function makeDeck() {
   var deck = [];
@@ -194,6 +200,13 @@ function canMeldWithPicked(pickedCodes, handCodes) {
 
 function detectMeldType(codes) {
   if (!codes || codes.length < 3) return 'ไพ่';
+  // FIX v41: ใช้ SpetoRules (รองรับ A ต่ำ/สูง + สเปโตในชุดตอง) ให้ตรงกับฝั่ง server
+  if (typeof SpetoRules !== 'undefined') {
+    var _mt = SpetoRules.meldType(codes);
+    if (_mt === 'set') return 'ตอง';
+    if (_mt === 'run') return 'เรียง';
+    return 'ไพ่';
+  }
   var cards = codesToCards(codes);
   if (cards.length === 0) return 'ไพ่';
   var ranks = cards.map(function(c){ return c.rank; });
@@ -234,6 +247,15 @@ function findAllLayoffs(handCodes, game) {
         // FIX v39: สเปโตฝากได้เฉพาะลงชุดกองไพ่หน้าเดียวกัน (ตอง) เท่านั้น ห้ามฝากลงชุดเรียง
         if (isSpeto(hCard) && meldType !== 'ตอง') continue;
 
+        // FIX v41: ใช้ตรรกะ layoff ชุดเดียวกับ server (rummy_can_layoff / SpetoRules.canLayoff)
+        //   เรียง: สีเดียวกัน และเลข = ต่ำสุด-1 หรือสูงสุด+1 (รองรับ A ต่ำ/สูง)
+        //   ตอง : ตัวเลขเดียวกัน คนละสำเนา
+        if (typeof SpetoRules !== 'undefined') {
+          if (SpetoRules.canLayoff(hCard.code, meldCodes)) {
+            results.push({ layoffCard: hCard.code, meldIndex: mi, targetPid: pid, meldType: meldType });
+          }
+          continue;
+        }
         if (meldType === 'ตอง') {
           // Same rank as existing set
           if (hCard.rank === meldCards[0].rank && hCard.suit !== meldCards[0].suit) {
@@ -534,15 +556,16 @@ async function clearPickedFlag(pid, attempt) {
 
 // ============================================================
 // FIX v39 — โทษสเปโต (2♣ / Q♠)
-// กติกา: หัก 100 แต้มเมื่อสเปโตถูก "ใช้" (นำไปเกิดในชุด หรือฝาก)
-//   - ทิ้งสเปโตลอย ๆ (ยังไม่มีใครหยิบไปใช้)  → ยังไม่เสียแต้ม
-//   - สเปโตที่ถูกทิ้ง แล้วมีคนหยิบไปเกิด        → คนที่ทิ้งเป็นผู้เสียแต้ม
-//   - สเปโตในมือตัวเองถูกนำไปเกิด/ฝาก          → คนที่นำไปใช้เป็นผู้เสียแต้ม
-// เก็บผลไว้ที่: game.spetoOrigin = { '2♣': playerId } และ game.spettoPenalty = { playerId: 100*n }
-// (client เป็นเจ้าของโทษฝั่งเดียว → ไม่หักซ้ำกับ server)
+// ⚠️ FIX v41 (2026-10-23) — SERVER เป็นเจ้าของการคำนวณโทษฝั่งเดียวแล้ว
+//   (play_turn ใน Supabase: FIX-speto-2026-10-23.sql)
+//   → 2.1 ทิ้งดัมมี่ / 2.2 ตีเต็ม  = หัก -100 ทันทีตอนทิ้ง
+//   → 2.3 สเปโต = ทิ้งแล้ว "ค้าง" รอ 1 รอบ ถ้ามีคน MELD ไพ่ใบนั้น → คนทิ้งเสีย -100
+//   → client ห้ามหักแต้มเอง (จะโดนหักซ้ำ) → ฟังก์ชัน 2 ตัวล่างถูก "ปิด" ไว้ (ไม่ถูกเรียกแล้ว)
+//   เก็บผลไว้ที่ (server เป็นคนเขียน): game.spetoPending / game.spettoPenalty / game.turnSeq
 // ============================================================
 function isSpetoCode(code) { return code === '2♣' || code === 'Q♠'; }
 
+// ⚠️ DEPRECATED (FIX v41) — ไม่ถูกเรียกแล้ว (server จัดการเอง) เก็บไว้เผื่อ rollback
 // จดจำว่าใครเป็นคนทิ้งสเปโตใบนี้ (เผื่อมีคนหยิบไปเกิด → คนทิ้งเสียแต้ม)
 async function markSpetoDiscarded(pid, code, attempt) {
   attempt = attempt || 0;
@@ -573,6 +596,7 @@ async function markSpetoDiscarded(pid, code, attempt) {
   } catch(e) { console.error('markSpetoDiscarded error:', e); return false; }
 }
 
+// ⚠️ DEPRECATED (FIX v41) — ไม่ถูกเรียกแล้ว (server เป็นเจ้าของโทษ) เก็บไว้เผื่อ rollback
 // หักโทษสเปโต -100 ให้ผู้ที่ "ใช้" สเปโต (เกิด/ฝาก) หรือผู้ที่ทิ้งมันไว้ให้คนอื่นหยิบไปเกิด
 async function applySpetoPenalty(pid, codes, attempt) {
   attempt = attempt || 0;
@@ -1094,7 +1118,7 @@ async function pickFromDiscard(idx) {
     renderDiscardPile(currentGame);
     openMeldModal(res.taken);
     if (res.speto > 0) {
-      notify('⚠️ หยิบสเปโต! ถ้านำไปเกิด/ฝาก ผู้ที่ทิ้งไพ่นี้จะเสีย 100 แต้ม');
+      notify('⚠️ หยิบสเปโต! ถ้านำไป "เกิด" ภายใน 1 รอบ ผู้ที่ทิ้งไพ่นี้จะเสีย ' + MAX_PENALTY_PER_DISCARD + ' แต้ม (ฝากไม่โดนโทษ)');
     } else {
       notify('🗑️ หยิบได้แล้ว! ต้องเกิดใบที่หยิบทันที');
     }
@@ -1112,18 +1136,25 @@ async function discardSelected() {
     var handCodes = currentGame.hands[myPlayerId] || [];
     if (handCodes.indexOf(cardCode) === -1) { notify('❌ ไม่สามารถทิ้งไพ่ที่หยิบจากกองทิ้งมาได้'); return; }
 
-    var card = codeToCard(cardCode);
     selectedCards = [];
     pendingPickedCodes = [];
+
+    // FIX v41: server เป็นเจ้าของการคำนวณโทษ (2.1/2.2/2.3) → คำนวณ "คำเตือน" ก่อนทิ้ง
+    //   (อ่านอย่างเดียว ไม่หักแต้ม — การหักจริงทำที่ server)
+    var _predict = (typeof SpetoRules !== 'undefined')
+      ? SpetoRules.predictDiscardPenalty(currentGame, myPlayerId, cardCode) : null;
 
     var r = await rpcPlayTurn('DISCARD', { cardCode: cardCode });
     if (!r) return;
     hasDiscardedThisTurn = true; // บันทึกว่าทิ้งแล้ว ถึงจะจบตาได้
 
-    // FIX v39: จดจำว่าใครเป็นคนทิ้งสเปโต (ถ้ามีคนหยิบไปเกิด/ฝาก → คนทิ้งเสีย 100 แต้ม)
-    if (isSpeto(card)) {
-      await markSpetoDiscarded(myPlayerId, cardCode);
-      notify('⚠️ ทิ้งสเปโต! (ยังไม่เสียแต้ม — ถ้ามีคนหยิบไปเกิด คุณจะเสีย 100 แต้ม)');
+    // FIX v41: แจ้งเตือนตามกติกาใหม่ (ไม่หักแต้มฝั่ง client)
+    if (_predict) {
+      if (_predict.dumy || _predict.full) {
+        notify('⚠️ ทิ้ง' + (_predict.dumy ? 'ดัมมี่' : 'ตีเต็ม') + '! คุณจะเสีย ' + MAX_PENALTY_PER_DISCARD + ' แต้ม');
+      } else if (_predict.speto) {
+        notify('⚠️ ทิ้งสเปโต! ถ้ามีคนเก็บไปเกิดภายใน 1 รอบ คุณจะเสีย ' + MAX_PENALTY_PER_DISCARD + ' แต้ม');
+      }
     }
 
     // Check for knockout
@@ -1290,8 +1321,7 @@ async function botPlay(botId) {
             if (r2) {
               hand = codesToCards(currentGame.hands[botId] || []);
               handCodes = hand.map(function(c){ return c.code; });
-              // FIX v39: โทษสเปโต -100 เมื่อสเปโตถูกนำไปอยู่ในชุดเกิด
-              if (bmgCodes.some(isSpetoCode)) await applySpetoPenalty(botId, bmgCodes);
+              // FIX v41: โทษคำนวณที่ server เท่านั้น → client ไม่หักซ้ำ
               await clearPickedFlag(botId);
             }
             await delay(300);
@@ -1348,8 +1378,7 @@ async function botPlay(botId) {
         if (r) {
           hand = codesToCards(currentGame.hands[botId] || []);
           handCodes = hand.map(function(c){ return c.code; });
-          // FIX v39: โทษสเปโต -100 เมื่อสเปโตถูกฝากลงชุด
-          if (isSpetoCode(lo.layoffCard)) await applySpetoPenalty(botId, [lo.layoffCard]);
+          // FIX v41: โทษคำนวณที่ server เท่านั้น → client ไม่หักซ้ำ
         }
         await delay(300);
       }
@@ -1375,8 +1404,7 @@ async function botPlay(botId) {
 
       var r = await rpcPlayTurn('DISCARD', { cardCode: dCard.code, playerId: botId });
       if (!r) { botRunning[botId] = false; return; }
-      // FIX v39: จดจำว่าบอททิ้งสเปโต (ถ้ามีคนหยิบไปเกิด → บอทเสีย 100 แต้ม)
-      if (isSpetoCode(dCard.code)) await markSpetoDiscarded(botId, dCard.code);
+      // FIX v41: โทษ (2.1/2.2/2.3) คำนวณที่ server เท่านั้น → บอทไม่ต้องหักเอง
     }
 
     botRunning[botId] = false;
@@ -1484,8 +1512,7 @@ async function confirmMeld() {
     selectedCards = [];
     var r = await rpcPlayTurn('MELD', { meldCodes: meldedCodes });
     if (!r) { selectedCards = []; return; } // revert on failure
-    // FIX v39: โทษสเปโต -100 เมื่อสเปโตถูกนำไปอยู่ในชุดเกิด
-    if (meldedCodes.some(isSpetoCode)) await applySpetoPenalty(myPlayerId, meldedCodes);
+    // FIX v41: โทษสเปโต/ทิ้งดัมมี่/ตีเต็ม คำนวณที่ server เท่านั้น → client ไม่หักซ้ำ
     // FIX v36: server บางเวอร์ชันไม่ล้าง pickedFromDiscard → ล้างเองให้แน่ (ไม่งั้นผู้เล่นค้าง)
     await clearPickedFlag(myPlayerId);
     // FIX: transition phase to 'action' so discard btn enables immediately
@@ -1585,8 +1612,7 @@ async function selectLayoff(lt) {
       targetMeldIdx: lt.meldIndex
     });
     if (!r) return;
-    // FIX v39: โทษสเปโต -100 เมื่อสเปโตถูกฝากลงชุด
-    if (isSpetoCode(lt.layoffCard)) await applySpetoPenalty(myPlayerId, [lt.layoffCard]);
+    // FIX v41: โทษคำนวณที่ server เท่านั้น → client ไม่หักซ้ำ (ฝากสเปโต = ไม่โดนโทษ 2.3)
     closeLayoffModal();
     var card = codeToCard(lt.layoffCard);
     notify('💚 ฝาก ' + (card ? card.rank + card.suit : lt.layoffCard) + ' สำเร็จ!');
@@ -1987,7 +2013,7 @@ function showEndGame(data) {
             '<div class="eg-pt"><span class="lbl">ไพ่บนมือ</span><span class="val ' + (b.hand > 0 ? 'neg' : 'zero') + '">' + (b.hand > 0 ? '-' + b.hand : '0') + 'P</span></div>' +
             '<div class="eg-pt"><span class="lbl">คะแนนพิเศษ</span><span class="val ' + (b.bonus > 0 ? 'pos' : 'zero') + '">' + (b.bonus > 0 ? '+' : '') + (b.bonus || 0) + 'P</span>' +
               (knock ? '<span class="eg-knock">น็อค +' + (b.knockBonus || 0) + 'P</span>' : '') + '</div>' +
-            ((b.penalty || 0) > 0 ? '<div class="eg-pt"><span class="lbl">โทษสเปโต</span><span class="val neg">-' + (b.penalty || 0) + 'P</span></div>' : '') +
+            ((b.penalty || 0) > 0 ? '<div class="eg-pt"><span class="lbl">โทษ</span><span class="val neg">-' + (b.penalty || 0) + 'P</span></div>' : '') +
             '<div class="eg-pt"><span class="lbl">คะแนนรอบนี้</span><span class="val ' + (round > 0 ? 'pos' : (round < 0 ? 'neg' : 'zero')) + '">' + (round > 0 ? '+' : '') + round + 'P</span></div>' +
             '<div class="eg-pt"><span class="lbl">คะแนนรวม</span><span class="val ' + (total > 0 ? 'pos' : (total < 0 ? 'neg' : 'zero')) + '">' + (total > 0 ? '+' : '') + total + 'P</span></div>' +
           '</div>' +
@@ -2092,10 +2118,13 @@ async function playAgain() {
       gameData.totalScores[pids[mi]] = prevTotal[pids[mi]] || 0;
       gameData.hasFirstMeld[pids[mi]] = false;
     }
-    // FIX v39: รีเซ็ตโทษสเปโต + ผู้ทิ้งสเปโต ตอนขึ้นรอบใหม่
+    // FIX v39/v41: รีเซ็ตโทษ + สถานะค้างสเปโต + ตัวนับรอบ ตอนขึ้นรอบใหม่
     gameData.spettoPenalty = {};
     gameData.spetoOrigin = {};
     gameData.spettoPenaltyDone = {};
+    gameData.spettoDiscardDone = {};
+    gameData.spetoPending = {};     // FIX v41: pending สเปโต (2.3) ค้างรอ 1 รอบ
+    gameData.turnSeq = 0;           // FIX v41: ตัวนับรอบ (ใช้ตัดสิน "1 รอบ")
     gameData.hasDiscardedThisTurn = {};
     await db.from('rooms').update({ status: 'playing', game: gameData }).eq('id', roomCode);
     currentGame = gameData;
