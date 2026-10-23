@@ -993,7 +993,8 @@ function startPlayerTimer() {
     if (playerTimeLeft <= 0) {
       stopPlayerTimer();
       if (myTurn && currentGame) {
-        autoDiscard();
+        // FIX v47: หมดเวลา → ระบบเล่นแทนอัตโนมัติ (จั่วถ้ายังไม่จั่ว + ทิ้งสุ่มในมือ)
+        autoPlayTimedOutPlayer(myPlayerId, true);
       }
     }
   }, 1000);
@@ -1011,25 +1012,101 @@ function resetPlayerTimer() {
   if (myTurn) startPlayerTimer();
 }
 
-function autoDiscard() {
-  var handCodes = currentGame.hands[myPlayerId] || [];
-  var hand = codesToCards(handCodes);
-  var picked = myPickedCodes();
-  var allMelds = findMelds(hand);   // FIX v42: findAllSetsAndRuns ไม่มีอยู่จริง (ReferenceError) → ใช้ findMelds
-  var usedCodes = {};
-  allMelds.forEach(function(m) { m.cards.forEach(function(c) { usedCodes[c.code] = true; }); });
-  var canD = hand.filter(function(c) { return picked.indexOf(c.code) === -1; });
-  if (canD.length === 0) canD = hand;
-  var safe = canD.filter(function(c) { return !usedCodes[c.code]; });
-  var targets = safe.length > 0 ? safe : canD;
-  var nonSpeto = targets.filter(function(c) { return !isSpeto(c); });
-  var list = nonSpeto.length > 0 ? nonSpeto : targets;
-  list.sort(function(a, b) { return cardPts(b) - cardPts(a); });
-  var toDiscard = list[0] || canD[0];
-  if (toDiscard) {
-    pendingDiscardCode = toDiscard.code;
-    doDiscard();
+// ============================================================
+// FIX v47 (2026-10-24) — เงื่อนไข "หมดเวลา" (พี่เอสั่ง 02:23)
+//   1) หมดเวลา + ยังไม่ได้จั่ว  → จั่วให้อัตโนมัติ แล้วทิ้งสุ่มในมือ
+//   2) หมดเวลา + จั่วแล้ว       → บังคับทิ้งสุ่มในมือ
+// ⚠️ บั๊กเดิม: autoDiscard() เรียก doDiscard() ที่ "ไม่มีอยู่จริงในไฟล์"
+//   → ReferenceError → ตาเลยค้างรอผู้เล่น (เกมไปต่อไม่ได้)
+// ============================================================
+var turnWatchPid = null;      // ผู้เล่นที่กำลังได้ตา (ใช้จับเวลา)
+var turnWatchSince = 0;       // เริ่มนับเวลาตั้งแต่ตาเปลี่ยน
+var TIMEOUT_GRACE = 20000;    // เผื่อเน็ตแกว่ง/เครื่องค้าง (20 วิ)
+var autoPlayBusy = {};        // pid -> true (กันเล่นแทนซ้ำ)
+
+function noteTurnChange(pid) {
+  if (pid !== turnWatchPid) {
+    turnWatchPid = pid;
+    turnWatchSince = Date.now();
   }
+}
+
+// เลือกไพ่สุ่มที่ทิ้งได้ (ไม่ใช่ไพ่ที่หยิบค้าง + เลี่ยงสเปโตถ้ามีทางเลือก)
+function pickRandomDiscardCode(pid) {
+  var hand = (currentGame && currentGame.hands && currentGame.hands[pid]) || [];
+  var picked = (currentGame && currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[pid]) || [];
+  var cand = hand.filter(function(c) { return picked.indexOf(c) === -1; });
+  if (cand.length === 0) cand = hand.slice();
+  var nonSpeto = cand.filter(function(c) { return !isSpetoCode(c); });
+  var pool = nonSpeto.length > 0 ? nonSpeto : cand;
+  if (pool.length === 0) return null;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+// เล่นแทนผู้เล่นที่หมดเวลา
+//   pid    = ผู้เล่นที่หมดเวลา
+//   isSelf = true ถ้าเป็นตัวเอง (จะมี notify)
+async function autoPlayTimedOutPlayer(pid, isSelf) {
+  if (autoPlayBusy[pid]) return;
+  autoPlayBusy[pid] = true;
+  try {
+    if (!currentGame || currentGame.status !== 'playing') return;
+    if (currentGame.turnPlayerId !== pid) return;
+
+    // 1) ยังไม่จั่ว → จั่วให้ก่อน (เงื่อนไข 1 ของพี่เอ)
+    var phase = currentGame.phase || 'draw';
+    if (phase === 'draw') {
+      var dr = await rpcPlayTurn('DRAW_DECK', { playerId: pid });
+      if (!dr) { console.warn('[TIMEOUT] auto draw failed:', pid); return; }
+      if (isSelf) notify('⏰ หมดเวลา! ระบบจั่วให้อัตโนมัติ');
+      await delay(300);
+    }
+
+    // 2) เคลียร์ไพ่ที่หยิบจากกองทิ้งค้าง (server ห้ามทิ้งถ้ายังหยิบค้าง)
+    var picked = (currentGame.pickedFromDiscard && currentGame.pickedFromDiscard[pid]) || [];
+    if (picked.length > 0) {
+      if (isSelf) await returnPickedCardsFor(pid);
+      else await clearPickedFlag(pid);
+      await delay(200);
+    }
+
+    var hand = (currentGame && currentGame.hands && currentGame.hands[pid]) || [];
+    if (hand.length === 0) return;
+
+    // เหลือ <=1 ใบ → น็อคจบรอบ (เหมือนบอท) ไม่งั้นจะไม่มีใครทิ้งไพ่และเกมค้าง
+    if (hand.length <= 1) {
+      await finishRoundClientSide(pid);
+      return;
+    }
+
+    // 3) ทิ้งสุ่มในมือ (เงื่อนไข 1 + 2 ของพี่เอ) — server เดินตาต่อให้เอง
+    var code = pickRandomDiscardCode(pid);
+    if (!code) return;
+    var r = await rpcPlayTurn('DISCARD', { cardCode: code, playerId: pid });
+    if (!r) { console.warn('[TIMEOUT] auto discard failed:', pid); return; }
+    if (isSelf) notify('⏰ หมดเวลา! ระบบทิ้งไพ่ให้อัตโนมัติ (' + code + ')');
+  } catch(e) {
+    console.error('[TIMEOUT] autoPlayTimedOutPlayer error:', e);
+  } finally {
+    setTimeout(function() { delete autoPlayBusy[pid]; }, 3000);
+  }
+}
+
+// watchdog: ตรวจว่าตาของผู้เล่นอื่น (มนุษย์) ค้างเกินเวลาไหม → เล่นแทน
+//   ทำให้เกมไม่ค้างแม้ผู้เล่นคนนั้นหลุดเน็ต/ปิดเครื่อง
+function checkStalledTurn() {
+  try {
+    if (!currentGame || currentGame.status !== 'playing') return;
+    var pid = currentGame.turnPlayerId;
+    if (!pid) return;
+    noteTurnChange(pid);
+    if (pid === myPlayerId) return;            // ของเรา → timer ของเราจัดการ
+    if (pid.indexOf('bot_') === 0) return;      // บอทมีระบบ timeout ของตัวเอง
+    var elapsed = Date.now() - turnWatchSince;
+    if (elapsed < PLAYER_TIMEOUT + TIMEOUT_GRACE) return;
+    console.warn('[TIMEOUT] ผู้เล่น', pid, 'ค้างเกิน', Math.round(elapsed/1000), 'วิ → ระบบเล่นแทน');
+    autoPlayTimedOutPlayer(pid, false);
+  } catch(e) {}
 }
 
 function cardPts(c) {
@@ -2406,6 +2483,8 @@ function startPolling(rid) {
             currentRoomVersion = remoteRoom.version || currentRoomVersion;
             if (remoteRoom.status === 'playing') {
               renderGame(currentGame);
+              // FIX v47: ตรวจตาของผู้เล่นอื่นที่ค้างเกินเวลา → ระบบเล่นแทน
+              checkStalledTurn();
               // Also trigger bot from polling as backup
               if (currentGame.turnPlayerId && currentGame.turnPlayerId.indexOf('bot_') === 0) {
                 var pid = currentGame.turnPlayerId;
@@ -2419,6 +2498,8 @@ function startPolling(rid) {
               showEndGame(resolveEndGame(remoteRoom));
             }
           }
+          // FIX v47: เช็คตาค้างทุกรอบ polling (ไม่ต้องรอ game เปลี่ยน) — กันตาค้างเมื่อเน็ตหลุด
+          checkStalledTurn();
         }
       }
     } catch(e) { console.warn('[Poll] exception:', e.message); }
