@@ -1151,7 +1151,8 @@ async function discardSelected() {
     // FIX v41: แจ้งเตือนตามกติกาใหม่ (ไม่หักแต้มฝั่ง client)
     if (_predict) {
       if (_predict.dumy || _predict.full) {
-        notify('⚠️ ทิ้ง' + (_predict.dumy ? 'ดัมมี่' : 'ตีเต็ม') + '! คุณจะเสีย ' + MAX_PENALTY_PER_DISCARD + ' แต้ม');
+        notify('⚠️ ทิ้ง' + (_predict.dumy ? 'ดัมมี่' : 'ตีเต็ม') + '! คุณจะเสีย ' + MAX_PENALTY_PER_DISCARD + ' แต้ม'
+          + (_predict.speto ? ' (รวมกรณีสเปโตแล้ว)' : ''));
       } else if (_predict.speto) {
         notify('⚠️ ทิ้งสเปโต! ถ้ามีคนเก็บไปเกิดภายใน 1 รอบ คุณจะเสีย ' + MAX_PENALTY_PER_DISCARD + ' แต้ม');
       }

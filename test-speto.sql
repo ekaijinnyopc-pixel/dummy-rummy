@@ -246,5 +246,27 @@ SELECT (r->>'error') AS err, (r->'round_scores') AS round_scores,
 FROM (SELECT play_turn('t12','p1','KNOCK', p_expected_version => 0) AS r) s;
 SELECT show_state('t12');
 
+\echo ''
+\echo '=============================================================='
+\echo ' T13 (FIX v41.1): 2.3 ซ้อนกับ 2.1 ของการทิ้งใบเดียวกัน → รวม 100 เดียว (ไม่ใช่ 200)'
+\echo '=============================================================='
+SELECT mk_room('t13', ARRAY['p1','p2'],
+  jsonb_build_object('p1', '["2♣"]'::jsonb, 'p2', '["2♥","2♦","5♣"]'::jsonb),
+  jsonb_build_object('p1', '[]'::jsonb, 'p2', '[["2♥","2♦","2♠"]]'::jsonb),
+  ARRAY['2♠'], 'p1');
+
+\echo '--- 1) p1 DISCARD 2♣ → 2.1 (ต่อชุดตองของ p2) + 2.3 (มี 2♠ เกี่ยว) → หักทันที 100 ---'
+SELECT (r->>'error') AS err, (r->>'dumy') AS dumy, (r->>'full') AS full,
+       (r->>'penalty') AS penalty, (r->'game'->'spettoPenalty') AS spetto,
+       (r->'game'->'spetoPending') AS pending
+FROM (SELECT play_turn('t13','p1','DISCARD', p_card_code => '2♣', p_expected_version => 0) AS r) s;
+
+\echo '--- 2) p2 หยิบ 2♣ มา MELD (ตอง 2) → ต้อง "ไม่หักซ้ำ" (รวมยังเป็น 100) ---'
+UPDATE rooms SET game = jsonb_set(game, ARRAY['hands','p2'], '["2♥","2♦","5♣","2♣"]'::jsonb) WHERE id = 't13';
+SELECT (r->>'error') AS err, (r->'game'->'spettoPenalty') AS spetto,
+       (r->'game'->'spetoPending') AS pending
+FROM (SELECT play_turn('t13','p2','MELD', p_meld_codes => '["2♣","2♥","2♦"]', p_expected_version => 0) AS r) s;
+SELECT show_state('t13');
+
 DROP FUNCTION IF EXISTS show_state(TEXT);
 DROP FUNCTION IF EXISTS mk_room(TEXT, TEXT[], JSONB, JSONB, TEXT[], TEXT);

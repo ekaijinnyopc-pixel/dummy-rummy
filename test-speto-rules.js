@@ -172,6 +172,38 @@ ok('2.3 ภายใน 1 รอบ (2 คน) มีคน MELD → โดน',
 ok('2.3 ผ่าน 1 รอบ (2 คน) → รอด', R.pendingTrigger(pending2p, 'Q♠', 2) === null);
 
 // ---------------------------------------------------------------
+section('FIX v41.1 — โทษรวมต่อ 1 การทิ้งไม่เกิน 100 (2.3 ซ้อนกับ 2.1/2.2)');
+
+var gStack = {
+  discardPile: ['2♠'],
+  melds: { p1: [], p2: [['2♥', '2♦', '2♠']] },
+  hands: { p1: ['2♣'], p2: [] }
+};
+var rStack = R.predictDiscardPenalty(gStack, 'p1', '2♣');
+ok('ซ้อนกัน: 2.1 (ตอง) + 2.3 (สเปโต) พร้อมกัน', rStack.dumy === true && rStack.speto === true, rStack);
+eq('หักทันที 100', rStack.penalty, 100);
+eq('2.3 ไม่หักซ้ำ (รวมต่อการทิ้ง = 100)', rStack.spetoPendingPenalty, 0);
+eq('รวมทั้งหมด = 100', rStack.totalPenalty, 100);
+
+var gStack2 = {
+  discardPile: ['2♠'],
+  melds: { p1: [], p2: [] },
+  hands: { p1: ['2♣'], p2: [] }
+};
+var rStack2 = R.predictDiscardPenalty(gStack2, 'p1', '2♣');
+eq('2.3 อย่างเดียว (ไม่มี 2.1/2.2) → pending หัก 100', rStack2.spetoPendingPenalty, 100);
+eq('รวม = 100', rStack2.totalPenalty, 100);
+
+var pendStack = R.makeSpetoPending('2♣', 'p1', 0, 4, true);
+ok('pending จำได้ว่าถูกหักไปแล้ว', pendStack.alreadyPenalized === true, pendStack);
+var trigStack = R.pendingTrigger({ '2♣': pendStack }, '2♣', 1);
+ok('MELD แล้วไม่หักซ้ำ', trigStack && trigStack.penalty === 0, trigStack);
+
+var pendNo = R.makeSpetoPending('2♣', 'p1', 0, 4, false);
+var trigNo = R.pendingTrigger({ '2♣': pendNo }, '2♣', 1);
+ok('ยังไม่เคยถูกหัก → MELD แล้วหัก 100', trigNo && trigNo.penalty === 100, trigNo);
+
+// ---------------------------------------------------------------
 section('เครื่องมือพื้นฐาน');
 eq('rank 10♣', R.rank('10♣'), '10');
 eq('suit Q♠', R.suit('Q♠'), '♠');

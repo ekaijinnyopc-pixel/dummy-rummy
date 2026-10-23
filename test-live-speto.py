@@ -206,15 +206,33 @@ g = get_game('lt13')
 pen, pend, seq, dd = state(g)
 print('   หลังทิ้ง: penalty =', pen, ' pending =', pend)
 ok('ทันทีโดน -100 (2.1)', pen.get('p1') == 100, pen)
+ok('pending จำว่า alreadyPenalized', pend.get('2♣', {}).get('alreadyPenalized') is True, pend)
 # ตอนนี้ p2 เกิด 2♣ ต่อชุดของ p2 เอง? ใช้ p2 meld 2♠2♥2♦ ไป → ไม่ใช่ 2♣ → ไม่โดน
 r = turn('lt13', 'p2', 'PICK_DISCARD', p_discard_index=0)
 r = turn('lt13', 'p2', 'MELD', p_meld_codes=json.dumps(['2♠', '2♥', '2♦']))
 g = get_game('lt13')
 pen, pend, seq, dd = state(g)
 print('   หลัง MELD: penalty =', pen, ' pending =', pend)
+ok('FIX v41.1: MELD แล้วไม่หักซ้ำ (ยังเป็น 100)', pen.get('p1') == 100, pen)
+
+# --- T14: FIX v41.1 — 2.3 ซ้อนกับ 2.1 แล้ว MELD ไพ่สเปโตใบนั้นจริง → ยังเป็น 100 ---
+print('\nT14: FIX v41.1 — 2.1 + 2.3 ซ้อนกัน แล้วมีคน MELD 2♣ → รวม 100 เดียว (ไม่ใช่ 200)')
+mk_room('lt14', ['p1', 'p2'], {'p1': ['2♣'], 'p2': ['2♥', '2♦']},
+        {'p1': [], 'p2': [['2♥', '2♦', '2♠']]}, ['2♠'], 'p1')
+turn('lt14', 'p1', 'DISCARD', p_card_code='2♣')
+g = get_game('lt14')
+pen, pend, seq, dd = state(g)
+ok('ทันทีโดน -100 (2.1)', pen.get('p1') == 100, pen)
+r = turn('lt14', 'p2', 'PICK_DISCARD', p_discard_index=0)
+r = turn('lt14', 'p2', 'MELD', p_meld_codes=json.dumps(['2♣', '2♥', '2♦']))
+g = get_game('lt14')
+pen, pend, seq, dd = state(g)
+print('   หลัง MELD: penalty =', pen, ' pending =', pend)
+ok('รวมยังเป็น 100 (ไม่หักซ้ำเป็น 200)', pen.get('p1') == 100, pen)
+ok('pending ถูกล้าง', '2♣' not in pend, pend)
 
 # --- cleanup ---
-for rid in ['lt1', 'lt2', 'lt3', 'lt4', 'lt5', 'lt7', 'lt8', 'lt9', 'lt10', 'lt11', 'lt12', 'lt13']:
+for rid in ['lt1', 'lt2', 'lt3', 'lt4', 'lt5', 'lt7', 'lt8', 'lt9', 'lt10', 'lt11', 'lt12', 'lt13', 'lt14']:
     req('DELETE', '/rest/v1/rooms?id=eq.' + rid)
 
 print('\n' + '=' * 60)
