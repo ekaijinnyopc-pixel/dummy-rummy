@@ -151,35 +151,24 @@ function findMelds(hand) {
     }
     if (run.length >= 3) melds.push({ type:'run', cards: run.slice(), suit:suit });
 
-    // A as LOW: A-2-3...
+    // FIX v54 (2026-10-25, พี่เอ): ห้ามเกิด A-2-3 — "มอง A เป็นแต้มสูงสุด"
+    //   → A นับเป็น 14 เสมอ · เกิดได้แค่ Q-K-A / J-Q-K-A
+    //   (A-2-3 และ K-A-2 เกิดไม่ได้)
+    //   ใช้ RANK_ORDER_AHIGH (A=14) ตรวจเลขติดกันแบบเดียว
     if (aces.length > 0 && nonAces.length >= 2) {
-      var sortedNon = nonAces.slice().sort(function(a,b){ return (RANK_ORDER[a.rank]||14) - (RANK_ORDER[b.rank]||14); });
-      if (RANK_ORDER[sortedNon[0].rank] === 2) {
-        var lowRun = [aces[0], sortedNon[0]];
-        for (var j = 1; j < sortedNon.length; j++) {
-          var curr = RANK_ORDER[sortedNon[j].rank] || 14;
-          var prevR = RANK_ORDER[lowRun[lowRun.length-1].rank] || 14;
-          if (curr === prevR + 1) lowRun.push(sortedNon[j]); else break;
-        }
-        if (lowRun.length >= 3) melds.push({ type:'run', cards: lowRun.slice(), suit:suit });
-      }
-    }
-
-    // A as HIGH: Q-K-A
-    if (aces.length > 0 && nonAces.length >= 2) {
-      var hiCards = nonAces.filter(function(c){ var rv = RANK_ORDER[c.rank]||14; return rv >= 11; }); // J,Q,K
+      var hiCards = nonAces.filter(function(c){ var rv = RANK_ORDER_AHIGH[c.rank]||14; return rv >= 11; }); // J,Q,K
       if (hiCards.length >= 2) {
-        hiCards.sort(function(a,b){ return (RANK_ORDER[a.rank]||14) - (RANK_ORDER[b.rank]||14); });
-        var lastRank = RANK_ORDER[hiCards[hiCards.length-1].rank] || 14;
+        hiCards.sort(function(a,b){ return (RANK_ORDER_AHIGH[a.rank]||14) - (RANK_ORDER_AHIGH[b.rank]||14); });
+        var lastRank = RANK_ORDER_AHIGH[hiCards[hiCards.length-1].rank] || 14;
         if (lastRank === 12 || lastRank === 13) { // ends in Q or K
           var highRun = hiCards.concat(aces);
-          // Verify consecutive
+          // Verify consecutive (A = 14)
           var allSorted = highRun.slice().sort(function(a,b){
-            return (RANK_ORDER[b.rank]||14) - (RANK_ORDER[a.rank]||14);
+            return (RANK_ORDER_AHIGH[b.rank]||14) - (RANK_ORDER_AHIGH[a.rank]||14);
           });
           var valid = true;
           for (var m = 1; m < allSorted.length; m++) {
-            if ((RANK_ORDER[allSorted[m-1].rank]||14) - (RANK_ORDER[allSorted[m].rank]||14) !== 1) { valid = false; break; }
+            if ((RANK_ORDER_AHIGH[allSorted[m-1].rank]||14) - (RANK_ORDER_AHIGH[allSorted[m].rank]||14) !== 1) { valid = false; break; }
           }
           var hasTwo = highRun.some(function(c){ return c.rank === '2'; });
           if (valid && !hasTwo && highRun.length >= 3) melds.push({ type:'run', cards: highRun.slice(), suit:suit });
@@ -221,11 +210,12 @@ function detectMeldType(codes) {
     bySuit[cards[i].suit].push(cards[i]);
   }
   for (var s in bySuit) {
-    var sc = bySuit[s].sort(function(a,b){ return (RANK_ORDER[a.rank]||14) - (RANK_ORDER[b.rank]||14); });
+    // FIX v54: ใช้ลำดับ A=14 (A สูงสุด) → A-2-3 ไม่ผ่าน
+    var sc = bySuit[s].sort(function(a,b){ return (RANK_ORDER_AHIGH[a.rank]||14) - (RANK_ORDER_AHIGH[b.rank]||14); });
     if (sc.length >= 3) {
       var ok = true;
       for (var j = 1; j < sc.length; j++) {
-        if ((RANK_ORDER[sc[j].rank]||14) - (RANK_ORDER[sc[j-1].rank]||14) !== 1) { ok = false; break; }
+        if ((RANK_ORDER_AHIGH[sc[j].rank]||14) - (RANK_ORDER_AHIGH[sc[j-1].rank]||14) !== 1) { ok = false; break; }
       }
       if (ok) return 'เรียง';
     }
@@ -271,16 +261,14 @@ function findAllLayoffs(handCodes, game) {
           // Check if hCard can extend the run (low or high)
           var suit = meldCards[0].suit;
           if (hCard.suit !== suit) continue;
-          var ranks = meldCodes.map(function(c){ return RANK_ORDER[codeToCard(c).rank]||14; });
+          // FIX v54: A = 14 (สูงสุด) → ฝากต่อชุดเรียงใช้ลำดับเดียวกับตอนเกิด
+          var ranks = meldCodes.map(function(c){ return RANK_ORDER_AHIGH[codeToCard(c).rank]||14; });
           var minR = Math.min.apply(null, ranks);
           var maxR = Math.max.apply(null, ranks);
-          var hR = RANK_ORDER[hCard.rank] || 14;
+          var hR = RANK_ORDER_AHIGH[hCard.rank] || 14;
 
           // Check if hCard is exactly one below min or one above max
           if (hR === minR - 1 || hR === maxR + 1) {
-            // For A-high runs, make sure it's valid
-            if (hR === 1 && maxR === 14) continue; // A already high, can't go lower
-            if (hR === 14 && minR === 1) continue; // A already low, can't go higher
             results.push({ layoffCard: hCard.code, meldIndex: mi, targetPid: pid, meldType: meldType });
           }
         }

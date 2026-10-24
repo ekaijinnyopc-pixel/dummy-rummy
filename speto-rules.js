@@ -39,7 +39,8 @@
   var SPETO_CODES = ['2♣', 'Q♠'];
   var SUIT_CHARS = ['♠', '♥', '♦', '♣'];
   var RANK_VAL = {
-    'A': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
+    // FIX v54 (2026-10-25, พี่เอ): "มอง A เป็นแต้มสูงสุด" → A = 14 เสมอ
+    'A': 14, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
     '10': 10, 'J': 11, 'Q': 12, 'K': 13
   };
 
@@ -57,23 +58,21 @@
     return code.substring(0, code.length - 1);
   }
 
-  // A = 1 (ต่ำ) หรือ 14 (สูง)
+  // A = 14 (สูงสุด) เสมอ — FIX v54: ห้ามเกิด A-2-3
+  //   พารามิเตอร์ a_high เ� kept ไว้เพื่อไม่ให้ผู้เรียกเดิมพัง (ค่า A เท่ากันทั้ง 2 แบบ)
   function rankVal(code, aHigh) {
     var r = rank(code);
     if (!r) return null;
-    if (r === 'A') return aHigh ? 14 : 1;
+    if (r === 'A') return 14;
     return RANK_VAL[r] != null ? RANK_VAL[r] : null;
   }
 
-  // เลขติดกัน (A ต่ำ/สูง) — ใช้กับกติกา 2.3
+  // เลขติดกัน — ใช้กับกติกา 2.3 (A = 14 → ติดกับ K เท่านั้น)
   function adjacentRank(r1, r2) {
     if (!r1 || !r2) return false;
     var v1 = RANK_VAL[r1], v2 = RANK_VAL[r2];
     if (v1 == null || v2 == null) return false;
-    if (Math.abs(v1 - v2) === 1) return true;                 // A(1) ติดกับ 2
-    if (r1 === 'A' && (r2 === 'K' || r2 === 'Q')) return true;  // A สูง (เรียง Q-K-A)
-    if (r2 === 'A' && (r1 === 'K' || r1 === 'Q')) return true;
-    return false;
+    return Math.abs(v1 - v2) === 1;
   }
 
   // ===== ตรวจชุด (กอง / มือ) =====
@@ -111,13 +110,13 @@
     return true;
   }
 
-  // เรียง: สีเดียวกัน เลขติดกัน >= 3 ใบ (A ต่ำ/สูงได้ — K-A-2 ไม่เกิด)
+  // เรียง: สีเดียวกัน เลขติดกัน >= 3 ใบ (A = 14 เสมอ → A-2-3 ไม่เกิด)
   function isRunOf(codes) {
     if (!codes || codes.length < 3) return false;
     var s = suit(codes[0]), i;
     if (!s) return false;
     for (i = 1; i < codes.length; i++) if (suit(codes[i]) !== s) return false;
-    if (runValuesOk(runValues(codes, false))) return true;
+    // FIX v54: A = 14 (สูงสุด) → เกิดได้แค่ ...Q-K-A · A-2-3 / K-A-2 ไม่เกิด
     return runValuesOk(runValues(codes, true));
   }
 
@@ -146,16 +145,13 @@
       s = suit(meldCodes[0]);
       if (suit(cardCode) !== s) return false;
       if (isSpeto(cardCode)) return false;               // สเปโตฝากลงชุดเรียงไม่ได้
-      // ลองทั้งแบบ A ต่ำ และ A สูง (A-2-3 หรือ Q-K-A)
-      for (aHigh = false; aHigh !== true; aHigh = true) {
-        vals = runValues(meldCodes, aHigh);
-        if (!runValuesOk(vals)) continue;
-        min = vals[0]; max = vals[vals.length - 1];
-        hv = rankVal(cardCode, aHigh);
-        if (hv == null) continue;
-        if (hv === min - 1 || hv === max + 1) return true;
-      }
-      return false;
+      // FIX v54: A = 14 เสมอ (ไม่มี A ต่ำ) → คำนวณค่าเดียว
+      vals = runValues(meldCodes, true);
+      if (!runValuesOk(vals)) return false;
+      min = vals[0]; max = vals[vals.length - 1];
+      hv = rankVal(cardCode, true);
+      if (hv == null) return false;
+      return (hv === min - 1 || hv === max + 1);
     }
     return false;
   }
