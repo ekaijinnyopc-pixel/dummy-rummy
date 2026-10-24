@@ -573,9 +573,6 @@ BEGIN
 END;
 $$;
 
--- =====================================================================
--- ✅ คำสั่งตรวจสอบหลังรัน (วางรันแยกได้)
--- =====================================================================
 -- 1) เช็คว่า fix อยู่ใน play_turn แล้ว
 SELECT CASE WHEN position('INVALID_MELD' in pg_get_functiondef(oid)) > 0
   THEN '✅ FIX v50 อยู่แล้ว (MELD validate ทำงาน)'
@@ -585,19 +582,29 @@ FROM pg_proc WHERE proname = 'play_turn';
 
 -- 2) เช็คว่า rummy_meld_type ทำงานถูกต้อง (คาดหวัง: set | run | NULL)
 SELECT
-  rummy_meld_type(ARRAY['5♠','5♥','5♣'])          AS set_ok,      -- set
-  rummy_meld_type(ARRAY['7♠','8♠','9♠'])          AS run_ok,      -- run
-  rummy_meld_type(ARRAY['5♠','5♥','9♠'])          AS not_a_meld,  -- NULL
-  rummy_meld_type(ARRAY['7♠','8♠','Q♠'])          AS speto_run,   -- NULL (สเปโตห้ามเข้าชุดเรียง)
-  rummy_meld_type(ARRAY['2♣','2♥','2♦'])          AS speto_set;   -- set (สเปโตเข้าชุดตองได้ FIX v39)
+  rummy_meld_type(ARRAY['5♠','5♥','5♣'])          AS set_ok,
+  rummy_meld_type(ARRAY['7♠','8♠','9♠'])          AS run_ok,
+  rummy_meld_type(ARRAY['5♠','5♥','9♠'])          AS not_a_meld,
+  rummy_meld_type(ARRAY['7♠','8♠','Q♠'])          AS speto_run,
+  rummy_meld_type(ARRAY['2♣','2♥','2♦'])          AS speto_set;
 
--- 3) ตรวจห้องที่เกิด "ผิด" ไปแล้วก่อนรัน patch (ถ้ามี = ต้องแก้ด้วยมือ)
+-- 3) ห้องที่ game.melds ผิดรูปแบบ (ไม่ใช่ object) → ต้องแก้ด้วยมือ
+SELECT id, status, jsonb_typeof(game->'melds') AS melds_type
+FROM rooms
+WHERE game IS NOT NULL
+  AND jsonb_typeof(game->'melds') IS DISTINCT FROM 'object';
+
+-- 4) ตรวจห้องที่เกิด "ผิด" ไปแล้วก่อนรัน patch (ป้องกัน type ผิด)
 SELECT r.id AS room_id, r.status,
        m.pid AS player_id, m2.meld_codes,
        rummy_meld_type(ARRAY(SELECT jsonb_array_elements_text(m2.meld_codes))) AS actual_type
 FROM rooms r
-CROSS JOIN LATERAL jsonb_each(COALESCE(r.game->'melds','{}'::JSONB)) AS m(pid, melds)
-CROSS JOIN LATERAL jsonb_array_elements(m.melds) AS m2(meld_codes)
+CROSS JOIN LATERAL jsonb_each(
+  CASE WHEN jsonb_typeof(r.game->'melds') = 'object' THEN r.game->'melds' ELSE '{}'::JSONB END
+) AS m(pid, melds)
+CROSS JOIN LATERAL jsonb_array_elements(
+  CASE WHEN jsonb_typeof(m.melds) = 'array' THEN m.melds ELSE '[]'::JSONB END
+) AS m2(meld_codes)
 WHERE r.game IS NOT NULL
   AND (
     rummy_meld_type(ARRAY(SELECT jsonb_array_elements_text(m2.meld_codes))) IS NULL
