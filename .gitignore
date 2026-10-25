@@ -6,3 +6,4 @@ tools/*
 !tools/test-v55-integration.js
 !tools/test-v55.sql
 !tools/probe-v55-live.py
+!tools/audit-live-scores.py
