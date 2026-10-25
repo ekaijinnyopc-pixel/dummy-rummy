@@ -3,5 +3,6 @@ tools/*
 !tools/test-meld-flow.js
 !tools/test-v55-rules.js
 !tools/test-v55-client.js
+!tools/test-v55-integration.js
 !tools/test-v55.sql
 !tools/probe-v55-live.py
