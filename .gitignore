@@ -12,3 +12,6 @@ tools/*
 !tools/test-scoring-parity.js
 !tools/test-penalty-parity.js
 !tools/SMOKE-TEST-LIVE.md
+!tools/check-stuck-detail.py
+!tools/check-stuck-rooms.py
+!tools/cleanup-abandoned-rooms.py
