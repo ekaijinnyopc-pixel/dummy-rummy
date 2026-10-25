@@ -11,3 +11,4 @@ tools/*
 !tools/test-rules-parity.js
 !tools/test-scoring-parity.js
 !tools/test-penalty-parity.js
+!tools/SMOKE-TEST-LIVE.md
