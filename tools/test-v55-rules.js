@@ -120,14 +120,14 @@ function setupUI(opts) {
   Object.keys(els).forEach(function(k){ delete els[k]; });
 }
 
-// ยังไม่เคยหยิบจากกองทิ้ง → ปุ่ม "วาง" ต้องถูกซ่อน
+// ยังไม่เคยหยิบจากกองทิ้ง → ปุ่ม "วาง" ต้องยังแสดง (พี่เอ: "จะแสดง 'เกิดในมือ'")
 setupUI({ everPick: false });
 G.updateLayoffTargets();
 G.updateActionBtns();
-ok('T10: ยังไม่เคยเก็บเกิดจากกองทิ้ง → ปุ่ม "วาง (เกิดในมือ)" ถูกซ่อน',
-   els['btn-meld'] && els['btn-meld'].style.display === 'none', 'display=' + (els['btn-meld'] && els['btn-meld'].style.display));
-ok('T11: ยังไม่เคยเก็บเกิดจากกองทิ้ง → ปุ่ม "ฝาก" ถูกซ่อน',
-   els['btn-layoff'] && els['btn-layoff'].style.display === 'none', 'display=' + (els['btn-layoff'] && els['btn-layoff'].style.display));
+ok('T10: ยังไม่เคยเก็บเกิดจากกองทิ้ง → ปุ่ม "วาง (เกิดในมือ)" ยังแสดง',
+   els['btn-meld'] && els['btn-meld'].style.display === 'inline-block', 'display=' + (els['btn-meld'] && els['btn-meld'].style.display));
+ok('T11: ยังไม่เคยเก็บเกิดจากกองทิ้ง → ปุ่ม "ฝาก" กดไม่ได้ (disabled)',
+   els['btn-layoff'] && els['btn-layoff'].disabled === true, 'disabled=' + (els['btn-layoff'] && els['btn-layoff'].disabled));
 ok('T12: ยังไม่เคยเก็บเกิดจากกองทิ้ง → มีคำอธิบาย (action-hint)',
    els['action-hint'] && /เก็บเกิด/.test(els['action-hint'].textContent), els['action-hint'] && els['action-hint'].textContent);
 

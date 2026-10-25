@@ -1211,11 +1211,19 @@ async function setupRealtime(rid) {
           renderLobby(room.players || {}, totalPlayers);
         }
         else if (room.status === 'playing' && room.game) {
-          currentGame = room.game;
-          snapshotGame(room.game);
-          currentRoomVersion = room.version || currentRoomVersion;
-          showScreen('game-screen');
-          renderGame(room.game);
+          // FIX v55.2 (2026-10-25): กัน event เก่าทับ state ใหม่
+          //   (markEverMeld เขียน DB เพิ่มอีก 1 version → อาจมี event เก่าตามมาทีหลัง)
+          var rtVer = room.version || (room.game && room.game.version) || 0;
+          var isStale = rtVer > 0 && currentRoomVersion > 0 && rtVer < currentRoomVersion;
+          if (!isStale) {
+            currentGame = room.game;
+            snapshotGame(room.game);
+            currentRoomVersion = room.version || currentRoomVersion;
+            showScreen('game-screen');
+            renderGame(room.game);
+          } else {
+            console.log('[RT] ข้าม event เก่า:', rtVer, '<', currentRoomVersion);
+          }
           // Trigger bot from realtime callback ONLY
           if (currentGame.status === 'playing' && currentGame.turnPlayerId && currentGame.turnPlayerId.indexOf('bot_') === 0) {
             var pid = currentGame.turnPlayerId;
