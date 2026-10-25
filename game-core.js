@@ -279,6 +279,19 @@ function findAllLayoffs(handCodes, game) {
 }
 
 // ===== FIX v39: สูตรกลางคำนวณคะแนน (ใช้ร่วมกันทุกทาง: มนุษย์/บอท/หน้าจบเกม) =====
+// ===== FIX v55 (2026-10-25): กติกา "น็อคมืด" + "ต้องเก็บเกิดจากกองทิ้งก่อน" (พี่เอ) =====
+// ข้อ 2: ถ้าผู้เล่นยังไม่เคย "เก็บเกิดจากกองทิ้ง" (หยิบไพ่จากกองทิ้ง) → ปุ่ม "เกิดในมือ" + "ฝาก" ไม่แสดง
+// ข้อ 3: "น็อคมืด" = ชนะโดยไม่เคย "เกิด" ตั้งแต่ต้นเกมจนถึงรอบก่อนจะน็อค → คะแนนรอบนั้น ×2
+//   (เกมนี้ชนะด้วย "ยอดสะสมน้อยที่สุด" → คะแนนเพิ่ม = เสียเปรียบ = โทษจริง)
+// everMeld / everPick: { pid: true } เก็บใน game JSONB → ต้อง "ไม่ถูกรีเซ็ต"ตอนขึ้นรอบใหม่
+function hasEverMeld(game, pid) {
+  var m = game && game.everMeld;
+  return !!(m && m[pid]);
+}
+function hasEverPick(game, pid) {
+  var m = game && game.everPick;
+  return !!(m && m[pid]);
+}
 function computeRoundScoresFor(game, koId) {
   var res = { roundScores: {}, totalScores: {}, breakdown: {}, winner: null, knockBonus: 0 };
   if (!game || !game.hands) return res;
@@ -309,12 +322,16 @@ function computeRoundScoresFor(game, koId) {
     }
     var pen = penalty[pid] || 0;
     var round = meldPts - handPts + bonus - pen;
+    // FIX v55: "น็อคมืด" = น็อคโดยไม่เคยเกิดเลยตั้งแต่ต้นเกม → คะแนนรอบนี้ ×2
+    var darkKnock = isKo && !hasEverMeld(game, pid);
+    if (darkKnock) round = round * 2;
     res.roundScores[pid] = round;
     res.breakdown[pid] = {
       meld: meldPts, meldCards: meldCards,
       hand: handPts, handCards: handCards,
       bonus: bonus, knockBonus: knockBonus, isKnock: isKo,
-      penalty: pen, round: round
+      penalty: pen, round: round,
+      darkKnock: darkKnock
     };
   }
   var prev = game.scores || {};
@@ -602,6 +619,12 @@ async function rpcPlayTurn(action, opts) {
     // Update currentGame from server response
     if (data.game) {
       currentGame = data.game;
+      // FIX v55: ทำเครื่องหมาย "เคยเกิด" (ข้ามรอบ) — server เวอร์ชันเก่ายังไม่มี flag นี้
+      //   → client เซ็ตเองก่อนเขียนกลับ DB (ทำให้ทั้งมนุษย์และบอทถูกต้อง)
+      if (action === 'MELD' && currentGame) {
+        currentGame.everMeld = currentGame.everMeld || {};
+        currentGame.everMeld[playerId] = true;
+      }
       snapshotGame(data.game);
       currentRoomVersion = (data.game.version || currentRoomVersion + 1);
       // FIX v42: ห้ามเขียน game=null
@@ -660,6 +683,9 @@ async function pickDiscardClientSide(idx, pid) {
     ng.discardPile = remaining;
     ng.pickedFromDiscard = ng.pickedFromDiscard || {};
     ng.pickedFromDiscard[pid] = taken;
+    // FIX v55: ทำเครื่องหมาย "เคยเก็บเกิดจากกองทิ้ง" (ข้ามรอบ) → ใช้เปิดปุ่มวาง/ฝาก + ตัดสินน็อคมืด
+    ng.everPick = ng.everPick || {};
+    ng.everPick[pid] = true;
     ng.phase = 'action';
     // FIX v37: หยิบสเปโตไม่หักแต้มทันที
     // กติกาจริง: โทษ -100 เกิดเมื่อ "นำสเปโตไปอยู่ในชุดเกิด/ฝาก" เท่านั้น
@@ -718,6 +744,40 @@ async function clearPickedFlag(pid, attempt) {
     currentRoomVersion = ng.version;
     return true;
   } catch(e) { console.error('clearPickedFlag error:', e); return false; }
+}
+
+// ===== FIX v55 (2026-10-25) — ติดตาม "เคยเกิด" ข้ามรอบ (ใช้ตัดสิน "น็อคมืด") =====
+// everMeld = { pid: true } → ผู้เล่นเคยเกิดชุดอย่างน้อย 1 ครั้ง ตลอดทั้งเกม (ไม่ถูกรีเซ็ตตอนขึ้นรอบใหม่)
+// ถ้าน็อคโดย everMeld[pid] = false → "น็อคมืด" → คะแนนรอบนั้น ×2
+async function markEverMeld(pid, attempt) {
+  attempt = attempt || 0;
+  try {
+    if (!pid) return false;
+    if (currentGame && currentGame.everMeld && currentGame.everMeld[pid]) return true;
+    var rowRes = await db.from('rooms').select('id,game,version').eq('id', roomCode).single();
+    if (rowRes.error || !rowRes.data || !rowRes.data.game) return false;
+    var g = rowRes.data.game;
+    var rowVer = rowRes.data.version || 0;
+    var ver = Math.max(rowVer, g.version || 0);
+    var ng = JSON.parse(JSON.stringify(g));
+    ng.everMeld = ng.everMeld || {};
+    if (ng.everMeld[pid]) { currentGame = ng; return true; }
+    ng.everMeld[pid] = true;
+    ng.version = ver + 1;
+    var upd = await db.from('rooms')
+      .update({ game: ng, version: ng.version })
+      .eq('id', roomCode)
+      .eq('version', rowVer)
+      .select('version');
+    if (upd.error || !upd.data || upd.data.length === 0) {
+      if (attempt < 2) { await delay(150); return markEverMeld(pid, attempt + 1); }
+      return false;
+    }
+    currentGame = ng;
+    snapshotGame(ng);
+    currentRoomVersion = ng.version;
+    return true;
+  } catch(e) { console.error('markEverMeld error:', e); return false; }
 }
 
 // ============================================================
@@ -1315,6 +1375,8 @@ async function startGame() {
       headCard: firstCard.code,
       headPoints: hp,
       hasFirstMeld: {},
+      everMeld: {},
+      everPick: {},
       lastDiscard: null,
       deckEmpty: false,
       pickedFromDiscard: {},
@@ -1326,6 +1388,8 @@ async function startGame() {
       gameData.melds[playerIds[mi]] = [];
       gameData.scores[playerIds[mi]] = 0;
       gameData.hasFirstMeld[playerIds[mi]] = false;
+      gameData.everMeld[playerIds[mi]] = false;
+      gameData.everPick[playerIds[mi]] = false;
     }
     await db.from('rooms').update({ status: 'playing', game: gameData }).eq('id', roomCode);
     currentGame = gameData;
@@ -1634,6 +1698,8 @@ async function botPlay(botId) {
               handCodes = hand.map(function(c){ return c.code; });
               // FIX v41: โทษคำนวณที่ server เท่านั้น → client ไม่หักซ้ำ
               await clearPickedFlag(botId);
+              // FIX v55: ทำเครื่องหมาย "เคยเกิด" ของบอท
+              await markEverMeld(botId);
             }
             await delay(300);
           } else {
@@ -1672,6 +1738,8 @@ async function botPlay(botId) {
         if (r) {
           hand = codesToCards(currentGame.hands[botId] || []);
           handCodes = hand.map(function(c){ return c.code; });
+          // FIX v55: ทำเครื่องหมาย "เคยเกิด" ของบอท
+          await markEverMeld(botId);
         }
         await delay(300);
       }
@@ -1860,6 +1928,8 @@ async function confirmMeld() {
     selectedCards = [];
     var r = await rpcPlayTurn('MELD', { meldCodes: meldedCodes });
     if (!r) { selectedCards = []; return; } // revert on failure
+    // FIX v55: ทำเครื่องหมาย "เคยเกิด" (ข้ามรอบ) → ใช้ตัดสิน "น็อคมืด"
+    await markEverMeld(myPlayerId);
     // FIX v41: โทษสเปโต/ทิ้งดัมมี่/ตีเต็ม คำนวณที่ server เท่านั้น → client ไม่หักซ้ำ
     // FIX v36: server บางเวอร์ชันไม่ล้าง pickedFromDiscard → ล้างเองให้แน่ (ไม่งั้นผู้เล่นค้าง)
     await clearPickedFlag(myPlayerId);
@@ -1882,7 +1952,9 @@ function updateLayoffTargets() {
   if (!currentGame || !myTurn) { layoffTargets = []; return; }
   var handCodes = currentGame.hands[myPlayerId] || [];
   var hasMeld = currentGame.hasFirstMeld && currentGame.hasFirstMeld[myPlayerId];
-  if (!hasMeld) { layoffTargets = []; updateLayoffBtn(); return; }
+  // FIX v55 (ข้อ 2): ยังไม่เคย "เก็บเกิดจากกองทิ้ง" → ฝากไม่ได้
+  var everPick = hasEverPick(currentGame, myPlayerId);
+  if (!hasMeld || !everPick) { layoffTargets = []; updateLayoffBtn(); return; }
   layoffTargets = findAllLayoffs(handCodes, currentGame);
   updateLayoffBtn();
 }
@@ -1891,8 +1963,10 @@ function updateLayoffBtn() {
   var btn = document.getElementById('btn-layoff');
   if (!btn) return;
   var hasMeld = currentGame && currentGame.hasFirstMeld && currentGame.hasFirstMeld[myPlayerId];
+  // FIX v55 (ข้อ 2): ยังไม่เคย "เก็บเกิดจากกองทิ้ง" → ฝากไม่ได้ (ปุ่มยังเห็น แต่กดไม่ได้ + มีคำอธิบาย)
+  var everPick = hasEverPick(currentGame, myPlayerId);
   var hasTargets = layoffTargets && layoffTargets.length > 0;
-  btn.disabled = !myTurn || !hasMeld || !hasTargets;
+  btn.disabled = !myTurn || !hasMeld || !hasTargets || !everPick;
   btn.style.display = hasMeld ? 'inline-block' : 'none';
 }
 
@@ -1907,6 +1981,11 @@ function explainWhyDisabled() {
     var handCodes = (currentGame.hands && currentGame.hands[myPlayerId]) || [];
     var hasMeld = currentGame.hasFirstMeld && currentGame.hasFirstMeld[myPlayerId];
     var picked = myPickedCodes();
+
+    // FIX v55 (ข้อ 2): ยังไม่เคย "เก็บเกิดจากกองทิ้ง" → "ฝาก" ไม่ได้ (แต่ "เกิดในมือ" ใช้ได้ตามปกติ)
+    if (!hasEverPick(currentGame, myPlayerId)) {
+      msgs.push('🔒 "ฝาก" ไม่ได้: ต้อง "เก็บเกิดจากกองทิ้ง" อย่างน้อย 1 ครั้งก่อน (เกิดในมือได้ตามปกติ)');
+    }
 
     if (hasMeld && (!layoffTargets || layoffTargets.length === 0)) {
       var spetoInHand = handCodes.filter(function(c){ return isSpetoCode(c); });
@@ -2359,6 +2438,9 @@ function updateActionBtns() {
         btnPickMeld.style.display = 'inline-block';
       }
       if (btnMeld) {
+        // FIX v55 (ข้อ 2): ปุ่ม "วาง (เกิดในมือ)" แสดงเสมอ
+        //   (พี่เอ: "ถ้ายังไม่เคยเก็บเกิดจากกองทิ้ง จะแสดง 'เกิดในมือ' และ 'ฝาก' ไม่ได้")
+        btnMeld.style.display = 'inline-block';
         // เปิดได้เมื่อ: มีไพ่ที่หยิบค้าง (ต้องวาง) OR มีชุดในมือที่เกิดได้ OR ผู้เล่นเลือกไพ่แล้ว
         var meldOpts = getMeldOptions(pickedCodesNow, selectedCards);
         btnMeld.disabled = !(picked || meldOpts.melds.length > 0);
@@ -2452,6 +2534,7 @@ function showEndGame(data) {
             '<div class="eg-pt"><span class="lbl">คะแนนพิเศษ</span><span class="val ' + (b.bonus > 0 ? 'pos' : 'zero') + '">' + (b.bonus > 0 ? '+' : '') + (b.bonus || 0) + 'P</span>' +
               (knock ? '<span class="eg-knock">น็อค +' + (b.knockBonus || 0) + 'P</span>' : '') + '</div>' +
             ((b.penalty || 0) > 0 ? '<div class="eg-pt"><span class="lbl">โทษ</span><span class="val neg">-' + (b.penalty || 0) + 'P</span></div>' : '') +
+            (b.darkKnock ? '<div class="eg-pt"><span class="lbl">น็อคมืด</span><span class="val neg">×2</span></div>' : '') +
             '<div class="eg-pt"><span class="lbl">คะแนนรอบนี้</span><span class="val ' + (round > 0 ? 'pos' : (round < 0 ? 'neg' : 'zero')) + '">' + (round > 0 ? '+' : '') + round + 'P</span></div>' +
             '<div class="eg-pt"><span class="lbl">คะแนนรวม</span><span class="val ' + (total > 0 ? 'pos' : (total < 0 ? 'neg' : 'zero')) + '">' + (total > 0 ? '+' : '') + total + 'P</span></div>' +
           '</div>' +
@@ -2544,17 +2627,24 @@ async function playAgain() {
       headCard: fc.code,
       headPoints: hp,
       hasFirstMeld: {},
+      everMeld: {},
+      everPick: {},
       lastDiscard: null,
       deckEmpty: false,
       pickedFromDiscard: {},
       level: (currentGame && currentGame.level) || roomLevel,
       version: 1
     };
+    // FIX v55: สืบทอด everMeld / everPick จากรอบก่อน (ไม่รีเซ็ต — ใช้ตัดสิน "น็อคมืด")
+    var prevEverMeld = (currentGame && currentGame.everMeld) || {};
+    var prevEverPick = (currentGame && currentGame.everPick) || {};
     for (var mi = 0; mi < pids.length; mi++) {
       gameData.melds[pids[mi]] = [];
       gameData.scores[pids[mi]] = prevTotal[pids[mi]] || 0;   // ยอดสะสมเดิม
       gameData.totalScores[pids[mi]] = prevTotal[pids[mi]] || 0;
       gameData.hasFirstMeld[pids[mi]] = false;
+      gameData.everMeld[pids[mi]] = !!(prevEverMeld[pids[mi]]);  // สืบทอด
+      gameData.everPick[pids[mi]] = !!(prevEverPick[pids[mi]]);  // สืบทอด
     }
     // FIX v39/v41: รีเซ็ตโทษ + สถานะค้างสเปโต + ตัวนับรอบ ตอนขึ้นรอบใหม่
     gameData.spettoPenalty = {};
