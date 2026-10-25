@@ -109,9 +109,38 @@ FROM (SELECT (game->'roundScores') AS round_scores FROM rooms WHERE id='T6') r;
 
 -- ============================================================
 -- TEST 7 (FIX v55.1): backfill ห้องเก่า → เติมธงให้อัตโนมัติ
+--   ห้องเก่า = ห้องที่ไม่มีธง everMeld/everPick
+--   → หลังรัน backfill ต้องมีธงครบ (t = ผ่าน)
 -- ============================================================
-SELECT t_new_room('T7', ARRAY['7♠'], ARRAY['9♣'], ARRAY['2♥','3♥'], ARRAY['K♣']);
-UPDATE rooms SET game = (game - 'everMeld') - 'everPick' WHERE id = 'T7';
-SELECT (game->'everMeld') IS NOT NULL AS t7_had_flags FROM rooms WHERE id='T7';
+SELECT t_new_room('T7', ARRAY['7\u2660'], ARRAY['9\u2663'], ARRAY['2\u2665','3\u2665'], ARRAY['K\u2663']);
+-- จำลองห้องเก่า: ลบธงออก
+UPDATE rooms SET game = (game - 'everMeld') - 'everPick' WHERE id='T7';
+SELECT (game->'everMeld') IS NOT NULL AS t7_before_backfill FROM rooms WHERE id='T7';  -- คาด false (ยังไม่มีธง)
+-- รัน backfill (เหมือน FIX-backfill-flags.sql)
+UPDATE rooms r
+SET game = jsonb_set(
+      jsonb_set(COALESCE(r.game, '{}'::JSONB), '{everMeld}', COALESCE(r.game->'hasFirstMeld', '{}'::JSONB)),
+      '{everPick}',
+      COALESCE((SELECT jsonb_object_agg(p, true)
+                FROM jsonb_array_elements_text(COALESCE(r.game->'playerOrder', '[]'::JSONB)) AS p), '{}'::JSONB)
+    )
+WHERE r.game IS NOT NULL
+  AND (jsonb_typeof(r.game->'everMeld') IS DISTINCT FROM 'object'
+       OR jsonb_typeof(r.game->'everPick') IS DISTINCT FROM 'object');
+SELECT (game->'everMeld') IS NOT NULL AS t7_had_flags FROM rooms WHERE id='T7';  -- คาด true (backfill สำเร็จ)
+-- รันซ้ำต้องไม่ทับธงที่ถูกต้องแล้ว (idempotent)
+UPDATE rooms r
+SET game = jsonb_set(
+      jsonb_set(COALESCE(r.game, '{}'::JSONB), '{everMeld}', COALESCE(r.game->'hasFirstMeld', '{}'::JSONB)),
+      '{everPick}',
+      COALESCE((SELECT jsonb_object_agg(p, true)
+                FROM jsonb_array_elements_text(COALESCE(r.game->'playerOrder', '[]'::JSONB)) AS p), '{}'::JSONB)
+    )
+WHERE r.game IS NOT NULL
+  AND (jsonb_typeof(r.game->'everMeld') IS DISTINCT FROM 'object'
+       OR jsonb_typeof(r.game->'everPick') IS DISTINCT FROM 'object');
+SELECT count(*) AS t7_updated_again FROM rooms
+WHERE id='T7' AND (jsonb_typeof(game->'everMeld') IS DISTINCT FROM 'object'
+       OR jsonb_typeof(game->'everPick') IS DISTINCT FROM 'object');  -- คาด 0 (ไม่แตะอีก)
 
 ROLLBACK;
