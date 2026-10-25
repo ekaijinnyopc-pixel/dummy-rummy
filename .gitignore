@@ -1,1 +1,7 @@
-tools/
+tools/*
+# เก็บเฉพาะไฟล์เทสต์ที่ปลอดภัย (ไม่มี secret) ไว้ใน git
+!tools/test-meld-flow.js
+!tools/test-v55-rules.js
+!tools/test-v55-client.js
+!tools/test-v55.sql
+!tools/probe-v55-live.py
