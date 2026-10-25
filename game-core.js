@@ -323,7 +323,13 @@ function computeRoundScoresFor(game, koId) {
     var pen = penalty[pid] || 0;
     var round = meldPts - handPts + bonus - pen;
     // FIX v55: "น็อคมืด" = น็อคโดยไม่เคยเกิดเลยตั้งแต่ต้นเกม → คะแนนรอบนี้ ×2
-    var darkKnock = isKo && !hasEverMeld(game, pid);
+    //   FIX v55.1: ห้องที่เริ่มก่อน FIX v55 ยังไม่มีธง everMeld → ต้องกันคิดผิด
+    //     ใช้หลักฐานอื่นด้วย: เกิดแล้วรอบนี้ (hasFirstMeld) หรือมีชุดบนโต๊ะ = เคยเกิดแน่นอน
+    var pidMelds = (game.melds && game.melds[pid]) ? game.melds[pid] : [];
+    var hasMeldedEver = hasEverMeld(game, pid)
+                     || !!(game.hasFirstMeld && game.hasFirstMeld[pid])
+                     || (pidMelds && pidMelds.length > 0);
+    var darkKnock = isKo && !hasMeldedEver;
     if (darkKnock) round = round * 2;
     res.roundScores[pid] = round;
     res.breakdown[pid] = {

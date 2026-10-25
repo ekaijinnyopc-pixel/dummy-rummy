@@ -509,7 +509,11 @@ BEGIN
     -- FIX v55 (ข้อ 3): "น็อคมืด" = ชนะโดยไม่เคย "เกิด" ตั้งแต่ต้นเกมจนถึงรอบก่อนจะน็อค
     --   → คะแนนรอบนี้ของผู้น็อค ×2
     --   (เกมนี้ชนะด้วย "ยอดสะสมน้อยที่สุด" → คะแนนเพิ่ม = เสียเปรียบ = โทษจริง)
-    IF NOT COALESCE((v_ever_meld->>p_player_id)::BOOLEAN, false) THEN
+    -- FIX v55.1: ห้องที่เริ่มก่อน FIX v55 ยังไม่มีธง everMeld → กันคิดผิด
+    --   ใช้หลักฐานอื่นด้วย: เกิดแล้วรอบนี้ (hasFirstMeld) หรือมีชุดบนโต๊ะ = เคยเกิดแน่นอน
+    IF NOT COALESCE((v_ever_meld->>p_player_id)::BOOLEAN, false)
+       AND NOT COALESCE((v_has_fm->>p_player_id)::BOOLEAN, false)
+       AND jsonb_array_length(COALESCE(v_melds->p_player_id, '[]'::JSONB)) = 0 THEN
       v_round_scores := jsonb_set(v_round_scores, ARRAY[p_player_id],
         to_jsonb(COALESCE((v_round_scores->>p_player_id)::INT, 0) * 2));
     END IF;
@@ -603,6 +607,23 @@ BEGIN
   END IF;
 END;
 $$;
+
+-- =====================================================================
+-- FIX v55.1 (2026-10-25) — อัปเดตห้องเก่าที่เริ่มก่อน FIX v55
+--   ห้องที่ยังไม่มีธง everMeld/everPick → ต้องเติม ไม่งั้นตอนน็อคจะคิด "น็อคมืด ×2" ผิด
+--   · everMeld = hasFirstMeld (ผู้ที่เกิดแล้วรอบนี้ = เคยเกิดแน่นอน → ไม่ใช่น็อคมืด)
+--   · everPick = true ทุกคน (ไม่ล็อกปุ่ม "ฝาก" ของห้องที่กำลังเล่นอยู่)
+-- =====================================================================
+UPDATE rooms r
+SET game = jsonb_set(
+      jsonb_set(COALESCE(r.game, '{}'::JSONB), '{everMeld}', COALESCE(r.game->'hasFirstMeld', '{}'::JSONB)),
+      '{everPick}',
+      COALESCE((SELECT jsonb_object_agg(p, true)
+                FROM jsonb_array_elements_text(COALESCE(r.game->'playerOrder', '[]'::JSONB)) AS p), '{}'::JSONB)
+    )
+WHERE r.game IS NOT NULL
+  AND (jsonb_typeof(r.game->'everMeld') IS DISTINCT FROM 'object'
+       OR jsonb_typeof(r.game->'everPick') IS DISTINCT FROM 'object');
 
 -- 1) เช็คว่า fix อยู่ใน play_turn แล้ว
 SELECT CASE WHEN position('INVALID_MELD' in pg_get_functiondef(oid)) > 0
