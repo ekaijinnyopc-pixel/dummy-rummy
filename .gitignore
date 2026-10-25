@@ -7,3 +7,5 @@ tools/*
 !tools/test-v55.sql
 !tools/probe-v55-live.py
 !tools/audit-live-scores.py
+!tools/probe-speto-live.py
+!tools/test-rules-parity.js

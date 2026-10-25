@@ -1,13 +1,16 @@
 -- =====================================================================
--- 🚀 APPLY-ALL — รันไฟล์เดียวจบ (2026-10-25)
+-- 🚀 APPLY-ALL — รันไฟล์เดียวจบ (2026-10-25 · อัปเดต v2)
 -- ---------------------------------------------------------------------
--- รวม 2 patch ที่ยังรออยู่:
---   1) FIX a-high (v54) — A = แต้มสูงสุด (14) เสมอ
---   2) FIX v55 — น็อคมืด ×2 + ฝากต้องเคยเก็บเกิดจากกองทิ้ง + เพิ่มธง everMeld/everPick
+-- รวม 3 ส่วน:
+--   1) FIX a-high (v54)  — A = แต้มสูงสุด (14) เสมอ
+--   2) FIX a-high v54.1 — rummy_adjacent_rank: ตัด "A ติดกับ Q" ทิ้ง
+--      (แก้บั๊กสเปโต 2.3: server โทษ Q♠ เมื่อมี A♠ ในกองทิ้ง ทั้งที่ client ไม่เตือน)
+--   3) FIX v55 — น็อคมืด ×2 + ฝากต้องเคยเก็บเกิดจากกองทิ้ง + ธง everMeld/everPick
 --      + backfill ห้องเก่า + validate ชุด (INVALID_MELD / DUPLICATE_CARD)
 --
 -- 📌 วิธีรัน: Supabase → SQL Editor → วางทั้งไฟล์นี้ → Run
 --    (ถ้ามี error ตรงไหน ให้หยุดแล้วส่ง screenshot มาให้จินดูค่ะ)
+-- ⚠️ ลำดับสำคัญ: ส่วน 1 ต้องมาก่อนส่วน 2 (adjacent_rank ใช้ rummy_rank_num)
 -- =====================================================================
 
 -- =============================================================
@@ -69,12 +72,40 @@ BEGIN
 END;
 $$;
 
--- 3. ยืนยัน: probe สดหลัง deploy
+-- 3. FIX v54.1 (2026-10-25): rummy_adjacent_rank — ตัด "A ติดกับ Q" ทิ้ง
+--    สาเหตุ: เดิมมีบรรทัด  IF p_r1='A' AND p_r2 IN ('K','Q') THEN RETURN true;
+--            → server มองว่า A ติดกับ Q (เหลือจากกติกา A ต่ำเก่า)
+--            → ผล: ทิ้งสเปโต Q♠ เมื่อกองทิ้งมี A♠ → server เก็บโทษ -100
+--              แต่ client (v54: A=14, ติดกับ K เท่านั้น) ไม่เตือน → ผู้เล่นโดนโทษมาโดยไม่รู้ตัว
+--    หลังแก้: rummy_rank_num('A') = 14 → abs check จัดการ A-K (|14-13|=1) อยู่แล้ว
+--            → ตัด special case ทิ้งทั้ง 2 บรรทัด เหลือแค่ abs(v1-v2)=1
+--    ⚠️ ต้อง apply พร้อมกับ rummy_rank_num (บรรทัดบน) — ไม่งั้น A=1 จะทำให้ A-2 ติดกัน (ผิดกติกา v54)
+CREATE OR REPLACE FUNCTION rummy_adjacent_rank(p_r1 TEXT, p_r2 TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql IMMUTABLE
+AS $$
+DECLARE
+  v1 INTEGER;
+  v2 INTEGER;
+BEGIN
+  IF p_r1 IS NULL OR p_r2 IS NULL THEN RETURN false; END IF;
+  v1 := rummy_rank_num(p_r1, FALSE);
+  v2 := rummy_rank_num(p_r2, FALSE);
+  IF v1 IS NULL OR v2 IS NULL THEN RETURN false; END IF;
+  -- FIX v54: A = 14 เสมอ → A ติดกับ K เท่านั้น (|14-13| = 1) · ไม่มี A ต่ำ
+  RETURN abs(v1 - v2) = 1;
+END;
+$$;
+
+-- 4. ยืนยัน: probe สดหลัง deploy
 -- SELECT rummy_is_run(ARRAY['A♥','2♥','3♥']);  -- คาด false
 -- SELECT rummy_is_run(ARRAY['Q♥','K♥','A♥']);  -- คาด true
 -- SELECT rummy_rank_num('A', false);            -- คาด 14
 -- SELECT rummy_rank_num('A', true);             -- คาด 14
 -- SELECT rummy_rank_val('A♠');                  -- คาด 14 (แต้มสูงสุด)
+-- SELECT rummy_adjacent_rank('A','K');          -- คาด true  (A ติดกับ K)
+-- SELECT rummy_adjacent_rank('A','Q');          -- คาด false (A ไม่ติดกับ Q — FIX v54.1)
+-- SELECT rummy_adjacent_rank('A','2');          -- คาด false (ไม่มี A ต่ำ)
 
 -- =====================================================================
 -- FIX v55 — FIX v54 (A = สูงสุด) + FIX v53 (validate ชุด/จั่วผิวไพ่) + น็อคมืด ×2  |  2026-10-25
@@ -745,16 +776,19 @@ LIMIT 20;
 
 
 -- =====================================================================
--- ✅ 3. ยืนยันหลังรัน (คัดลอกผลลัพธ์มาให้จินเช็คได้เลย)
+-- ✅ 4. ยืนยันหลังรัน (คัดลอกผลลัพธ์มาให้จินเช็คได้เลย)
 -- ---------------------------------------------------------------------
 -- คาดหวัง: rummy_is_run(A-2-3) = false · rummy_is_run(Q-K-A) = true
---           rummy_rank_num('A') = 14 (ทั้ง true/false)
+--           rummy_rank_num('A') = 14 · adjacent(A,K) = true · adjacent(A,Q) = false
 --           everMeld/everPick ในห้องเก่า = true (backfill แล้ว)
 -- =====================================================================
 SELECT rummy_is_run(ARRAY['A♥','2♥','3♥'])  AS a23_expect_false,
        rummy_is_run(ARRAY['Q♥','K♥','A♥'])  AS qka_expect_true,
        rummy_rank_num('A', false)           AS a_num_expect_14,
-       rummy_rank_num('A', true)            AS a_num_high_expect_14;
+       rummy_rank_num('A', true)            AS a_num_high_expect_14,
+       rummy_adjacent_rank('A','K')         AS a_k_expect_true,
+       rummy_adjacent_rank('A','Q')         AS a_q_expect_false,
+       rummy_adjacent_rank('A','2')         AS a_2_expect_false;
 
 SELECT count(*) AS rooms_total,
        count(*) FILTER (WHERE status = 'playing') AS rooms_playing
