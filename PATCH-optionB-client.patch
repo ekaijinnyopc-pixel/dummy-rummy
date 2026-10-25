@@ -1,0 +1,36 @@
+diff --git a/game-core.js b/game-core.js
+index 05e2a4d..33d66d5 100644
+--- a/game-core.js
++++ b/game-core.js
+@@ -225,10 +225,12 @@ function detectMeldType(codes) {
+ 
+ // Find all valid layoff targets for player's hand against ALL melds on table
+ // Returns array of { layoffCard, meldIndex, targetPid, meldType }
+-function findAllLayoffs(handCodes, game) {
++function findAllLayoffs(handCodes, game, excludePid) {
+   var results = [];
+   var handCards = codesToCards(handCodes);
+   for (var pid in (game.melds || {})) {
++    // OPTION B: ห้ามฝากลงชุดของตัวเอง (GAME-CONCEPT: "ฝากลงชุดของคนอื่น")
++    if (excludePid && pid === excludePid) continue;
+     var melds = game.melds[pid] || [];
+     for (var mi = 0; mi < melds.length; mi++) {
+       var meldCodes = melds[mi];
+@@ -1759,7 +1761,7 @@ async function botPlay(botId) {
+       }
+     } else {
+       // Layoff
+-      var los = findAllLayoffs(handCodes, currentGame);
++      var los = findAllLayoffs(handCodes, currentGame, botId);
+       if (los.length > 0) {
+         var lo = los[0];
+         var r = await rpcPlayTurn('LAYOFF', {
+@@ -1969,7 +1971,7 @@ function updateLayoffTargets() {
+   // FIX v55 (ข้อ 2): ยังไม่เคย "เก็บเกิดจากกองทิ้ง" → ฝากไม่ได้
+   var everPick = hasEverPick(currentGame, myPlayerId);
+   if (!hasMeld || !everPick) { layoffTargets = []; updateLayoffBtn(); return; }
+-  layoffTargets = findAllLayoffs(handCodes, currentGame);
++  layoffTargets = findAllLayoffs(handCodes, currentGame, myPlayerId);
+   updateLayoffBtn();
+ }
+ 

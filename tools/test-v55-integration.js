@@ -210,6 +210,7 @@ G.pickFromDiscard(1).then(function() {           // หยิบ 9♣ (เกิ
   G.currentRoomVersion = S.version;
   G.updateLayoffTargets();
   ok('A6: เคยเก็บเกิดจากกองทิ้งแล้ว → ฝากได้ (มีเป้าหมาย)', (G.layoffTargets || []).length > 0, G.layoffTargets);
+  ok('A6x (OPTION B): ไม่มีเป้าหมายชุดของตัวเอง', !(G.layoffTargets || []).some(function(t){ return t.targetPid === 'me'; }), G.layoffTargets);
   // ฝาก 8♥ ลงชุดตอง 8♠8♦8♣ ของบอท
   G.currentGame = JSON.parse(JSON.stringify(S.game));
   G.currentRoomVersion = S.version;
