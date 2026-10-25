@@ -151,7 +151,7 @@ sql += "DELETE FROM rooms WHERE id LIKE 'PP%';\n";
 
 var f = path.join(os.tmpdir(), 'penparity-' + Date.now() + '.sql');
 fs.writeFileSync(f, sql, 'utf8');
-var out = execFileSync('psql', ['-d', 'rummytest', '-A', '-t', '-F', '@@', '-f', f], {
+var out = execFileSync('psql', ['-d', (process.env.RUMMY_TEST_DB || 'rummytest'), '-A', '-t', '-F', '@@', '-f', f], {
   env: Object.assign({}, process.env, { PGHOST: '/tmp/pgtest', PGPORT: '55432', PGUSER: 'postgres' }),
   encoding: 'utf8', maxBuffer: 32 * 1024 * 1024
 });

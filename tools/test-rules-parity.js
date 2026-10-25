@@ -133,7 +133,7 @@ var sel = cases.map(function(c, idx) {
 
 var sqlFile = path.join(os.tmpdir(), 'parity-' + Date.now() + '.sql');
 fs.writeFileSync(sqlFile, sel + "\n", 'utf8');
-var out = execFileSync('psql', ['-d', 'rummytest', '-A', '-t', '-F', '|', '-f', sqlFile], {
+var out = execFileSync('psql', ['-d', (process.env.RUMMY_TEST_DB || 'rummytest'), '-A', '-t', '-F', '|', '-f', sqlFile], {
   env: Object.assign({}, process.env, { PGHOST: '/tmp/pgtest', PGPORT: '55432', PGUSER: 'postgres' }),
   encoding: 'utf8', maxBuffer: 32 * 1024 * 1024
 });
@@ -151,7 +151,7 @@ var ssel = SPETO_CASES.map(function(c, i) {
 }).join("\n UNION ALL ");
 var sfile2 = path.join(os.tmpdir(), 'parity-sp-' + Date.now() + '.sql');
 fs.writeFileSync(sfile2, ssel + "\n", 'utf8');
-var sout = execFileSync('psql', ['-d', 'rummytest', '-A', '-t', '-F', '|', '-f', sfile2], {
+var sout = execFileSync('psql', ['-d', (process.env.RUMMY_TEST_DB || 'rummytest'), '-A', '-t', '-F', '|', '-f', sfile2], {
   env: Object.assign({}, process.env, { PGHOST: '/tmp/pgtest', PGPORT: '55432', PGUSER: 'postgres' }),
   encoding: 'utf8', maxBuffer: 32 * 1024 * 1024
 });
