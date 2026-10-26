@@ -17,3 +17,4 @@ tools/*
 !tools/cleanup-abandoned-rooms.py
 !tools/simulate-live-state.sql
 !tools/verify-live-sql.sql
+!tools/apply-patch-live.sh
