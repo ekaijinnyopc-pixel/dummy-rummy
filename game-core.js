@@ -179,14 +179,22 @@ function findMelds(hand) {
   return melds;
 }
 
-// Check if picked cards can form a valid meld using at least one picked card
+// FIX v56 (2026-10-26, พี่เอ): ไพ่ที่หยิบจากกองทิ้ง = บังคับเกิดเฉพาะ "ใบแรก" (anchor)
+//   anchor = ใบที่ผู้เล่นกดหยิบ (pickedCodes[0]) · ไพ่ที่ติดมาพร้อมกัน (ใบที่ 2,3,...) เกิดหรือไม่ก็ได้
+//   → เช็คว่า anchor เกิดเป็นชุดได้ไหม (ไม่ใช่แค่ "มีไพ่ที่หยิบสักใบอยู่ในชุด")
 function canMeldWithPicked(pickedCodes, handCodes) {
-  var allCards = codesToCards(handCodes.concat(pickedCodes));
+  if (!pickedCodes || !pickedCodes.length) return null;
+  var anchor = pickedCodes[0];
+  // FIX v56: รวมมือ + ไพ่ที่หยิบ แล้ว "ตัดซ้ำ" (ไพ่ที่หยิบอาจถูกเพิ่มเข้ามือแล้ว → ไม่ต้องนับ 2 ครั้ง)
+  var pool = (handCodes || []).slice();
+  for (var pi = 0; pi < pickedCodes.length; pi++) {
+    if (pool.indexOf(pickedCodes[pi]) < 0) pool.push(pickedCodes[pi]);
+  }
+  var allCards = codesToCards(pool);
   var melds = findMelds(allCards);
   for (var i = 0; i < melds.length; i++) {
     var meldCodes = melds[i].cards.map(function(c){ return c.code; });
-    var usesPicked = pickedCodes.some(function(pc){ return meldCodes.indexOf(pc) >= 0; });
-    if (usesPicked) return melds[i];
+    if (meldCodes.indexOf(anchor) >= 0) return melds[i];
   }
   return null;
 }
@@ -917,7 +925,10 @@ async function returnPickedCardsFor(pid) {
     ng.discardPile = (ng.discardPile || []).concat(toReturn);
     ng.pickedFromDiscard = ng.pickedFromDiscard || {};
     ng.pickedFromDiscard[pid] = [];
-    ng.phase = 'action';
+    // FIX v56 (2026-10-26, พี่เอ): คืนไพ่แล้วต้องกลับเป็นเฟส "จั่ว" เหมือนเดิม
+    //   เดิมเขียน phase='action' → ปุ่ม "จั่ว"/"เก็บเกิด" ถูก disable ตลอด = ระบบรวน
+    //   (ผู้เล่นยังไม่ได้จั่วเลย ต้องกลับไปจั่ว/หยิบต่อ)
+    ng.phase = 'draw';
     ng.version = ver + 1;
     var upd = await db.from('rooms')
       .update({ game: ng, version: ng.version })
@@ -1051,9 +1062,52 @@ function updateTimerRing() {
   } catch(e) {}
 }
 
+// FIX v56 (2026-10-26, พี่เอ): "จุดเริ่มนับเวลา" (turnStartTime) เก็บไว้ใน game JSONB บน DB
+//   ปัญหาเดิม: timer นับใน memory ฝั่ง client ล้วน → กด F5 แล้วนับใหม่เต็ม 120s
+//   แก้: คำนวณเวลาที่เหลือจากจุดเริ่มใน DB เสมอ → รีเฟรช/เปิดหน้าใหม่ก็นับต่อจากเดิม
+function turnAnchorMs() {
+  try {
+    var t = currentGame && currentGame.turnStartTime;
+    if (!t) return 0;
+    t = (typeof t === 'number') ? t : parseInt(t, 10);
+    if (!isFinite(t) || t <= 0) return 0;
+    return t;
+  } catch(e) { return 0; }
+}
+
+// เวลาที่เหลือ = turnLimit - เวลาที่ผ่านไปนับจาก anchor ใน DB
+function remainingFromAnchor() {
+  var max = getTurnLimit();
+  var a = turnAnchorMs();
+  if (!a) return max;
+  var elapsed = Math.floor((Date.now() - a) / 1000);
+  if (!isFinite(elapsed) || elapsed < 0) elapsed = 0;
+  if (elapsed > max) elapsed = max;
+  return Math.max(0, max - elapsed);
+}
+
+// เขียน "จุดเริ่มนับ" ลง DB (version-checked → ไม่ทับ state ของ server, ไม่ bump version)
+//   เรียกหลังผู้เล่นลงมือแต่ละครั้ง → นับถอยหลังเริ่มใหม่ + ทน F5
+async function stampTurnAnchor() {
+  try {
+    if (!roomCode) return;
+    var now = Date.now();
+    if (currentGame) currentGame.turnStartTime = now;
+    var rowRes = await db.from('rooms').select('id,game,version').eq('id', roomCode).single();
+    if (rowRes.error || !rowRes.data || !rowRes.data.game) return;
+    var g = rowRes.data.game;
+    var rowVer = rowRes.data.version || 0;
+    var ng = JSON.parse(JSON.stringify(g));
+    ng.turnStartTime = now;
+    // อัปเดตแบบไม่ bump version (คงโครงสร้างเดิมของ play_turn ที่ใช้ p_expected_version)
+    var upd = await db.from('rooms').update({ game: ng }).eq('id', roomCode).eq('version', rowVer).select('id');
+    if (upd.error) console.warn('[TIMER] stamp anchor failed:', upd.error.message);
+  } catch(e) { console.warn('[TIMER] stamp anchor error:', e.message); }
+}
+
 function startPlayerTimer() {
   stopPlayerTimer();
-  playerTimeLeft = getTurnLimit();
+  playerTimeLeft = remainingFromAnchor();
   updateTimerRing();
   turnTimerInterval = setInterval(function() {
     if (modalOpen) return; // pause while modal open
@@ -1082,7 +1136,10 @@ function stopPlayerTimer() {
 }
 
 function resetPlayerTimer() {
-  if (myTurn) startPlayerTimer();
+  if (!myTurn) return;
+  // FIX v56: ผู้เล่นลงมือ → ตั้งจุดเริ่มนับใหม่ (เขียนลง DB) → F5 แล้วนับต่อ ไม่ใช่เริ่มใหม่
+  stampTurnAnchor();
+  startPlayerTimer();
 }
 
 // ============================================================
@@ -1447,20 +1504,32 @@ function myPickedCodes() {
   var hand = (currentGame && currentGame.hands && currentGame.hands[myPlayerId]) || [];
   var pending = pendingPickedCodes || [];
 
-  // FIX v36.1: server เวอร์ชันเก่าไม่ล้าง pickedFromDiscard หลังเกิด (เวอร์ชัน FIX ที่
-  // ยังไม่ได้ apply จะล้างทั้งก้อน) → ถ้า "ไพ่ที่หยิบสักใบหลุดจากมือไปแล้ว" แปลว่า
-  // ผู้เล่นเกิดไปแล้ว (มือเดียวกับเซิร์ฟเวอร์ที่ใช้เกิด) → ถือว่าครบถ้วน ไม่ค้าง
+  // FIX v36.1: server เวอร์ชันเก่าไม่ล้าง pickedFromDiscard หลังเกิด → ถ้า "ไพ่ที่หยิบสักใบ
+  // หลุดจากมือไปแล้ว" แปลว่าผู้เล่นเกิดไปแล้ว → ถือว่าครบถ้วน ไม่ค้าง
   var stillOnHand = [];
   for (var i = 0; i < fromGame.length; i++) {
     if (hand.indexOf(fromGame[i]) >= 0) stillOnHand.push(fromGame[i]);
   }
-  if (fromGame.length > 0 && stillOnHand.length < fromGame.length) return [];
+
+  // FIX v56 (2026-10-26, พี่เอ): "ใบแรกที่หยิบ" (anchor) = ใบที่ผู้เล่นกดหยิบ = ตัวแรกของรายการ
+  //   → ใบ anchor คือใบที่ "ต้องเกิด" · ไพ่ที่หยิบมาพร้อมกัน (ใบที่ 2,3,...) เกิดหรือไม่ก็ได้
+  //   ถ้า anchor หายจากมือแล้ว = เกิดไปแล้ว = ปลดข้อบังคับ (ไม่ต้องเกิดไพ่ที่หยิบมาพร้อมกัน)
+  var anchor = (fromGame.length > 0) ? fromGame[0] : (pending.length > 0 ? pending[0] : null);
+  if (anchor && hand.indexOf(anchor) < 0) return [];
 
   var out = stillOnHand.slice();
   for (var j = 0; j < pending.length; j++) {
     if (out.indexOf(pending[j]) < 0) out.push(pending[j]);
   }
   return out;
+}
+
+// FIX v56: ใบที่ "ต้องเกิด" หลังหยิบจากกองทิ้ง = ใบแรกที่หยิบ (anchor) ถ้ายังอยู่บนมือ
+//   คืน null = ไม่มีข้อบังคับ (ยังไม่ได้หยิบ / เกิด anchor แล้ว / คืนไพ่แล้ว)
+function mustMeldPickedCode() {
+  var codes = myPickedCodes();
+  if (!codes || !codes.length) return null;
+  return codes[0];
 }
 
 async function pickFromDiscard(idx) {
@@ -1511,8 +1580,10 @@ function pickDiscardTop() {
 async function discardSelected() {
   try {
     if (!currentGame || !myTurn) return;
-    if (currentGame.phase === 'action' && myPickedCodes().length > 0) {
-      notify('❌ ต้องเกิดใบที่หยิบจากกองทิ้งก่อนทิ้ง!'); return;
+    // FIX v56: บังคับแค่ "ใบแรกที่หยิบ" (anchor) → ไพ่ที่หยิบมาพร้อมกันเกิดหรือไม่ก็ได้
+    var mustMeld = mustMeldPickedCode();
+    if (currentGame.phase === 'action' && mustMeld) {
+      notify('❌ ต้องเกิดไพ่ใบแรกที่หยิบจากกองทิ้ง (' + mustMeld + ') ก่อนทิ้ง!'); return;
     }
     if (selectedCards.length !== 1) { notify('เลือกไพ่ 1 ใบที่จะทิ้ง'); return; }
     var cardCode = selectedCards[0];
@@ -1844,18 +1915,37 @@ async function onCancelMeld() {
 //   3) ไม่ได้เลือกอะไร → แสดงชุดที่เกิดได้ทั้งหมดในมือ
 function getMeldOptions(pickedCodes, selCodes) {
   var handCodes = (currentGame && currentGame.hands) ? (currentGame.hands[myPlayerId] || []) : [];
-  var all = findMelds(codesToCards(handCodes));
+  // FIX v56 (2026-10-26, พี่เอ): รวม "ไพ่ที่หยิบจากกองทิ้ง" เข้าไปหาชุดด้วย
+  //   (เดิมหาเฉพาะไพ่ในมือ → ถ้ามือยังไม่อัปเดต/ไม่มีใบที่หยิบ → หาชุดไม่เจอเลย
+  //    เช่น เกิด A-A-A ทั้งที่ A ที่หยิบมาอยู่ในมือแล้ว) + ตัดไพ่ซ้ำ
+  var pool = handCodes.slice();
+  if (pickedCodes && pickedCodes.length) {
+    for (var gi = 0; gi < pickedCodes.length; gi++) {
+      if (pool.indexOf(pickedCodes[gi]) < 0) pool.push(pickedCodes[gi]);
+    }
+  }
+  var all = findMelds(codesToCards(pool));
   var res = { melds: all, emptyReason: '' };
 
   if (pickedCodes && pickedCodes.length > 0) {
-    // ต้องใช้ไพ่ที่หยิบจากกองทิ้งครบทุกใบ (กันไพ่หยิบหาย/กลายเป็นทิ้งได้)
-    var f = all.filter(function(m){ return pickedCodes.every(function(pc){ return m.cards.some(function(c){ return c.code === pc; }); }); });
+    // FIX v56 (2026-10-26, พี่เอ): กติกา "เกิดใบแรกที่หยิบ"
+    //   anchor = pickedCodes[0] = ใบที่ผู้เล่นกดหยิบ (ต้องเกิดเสมอ)
+    //   ไพ่ที่หยิบมาพร้อมกัน (ใบที่ 2,3,...) เกิดหรือไม่ก็ได้
+    var anchor = pickedCodes[0];
+    // 1) ผู้เล่นเลือกชุดเอง → ใช้ชุดที่เลือก (ต้องมี anchor อยู่ด้วย)
+    if (selCodes && selCodes.length >= 3 && selCodes.indexOf(anchor) >= 0) {
+      var selTypeA = (typeof SpetoRules !== 'undefined') ? SpetoRules.meldType(selCodes) : null;
+      if (selTypeA === 'set' || selTypeA === 'run') {
+        res.melds = [{ type: selTypeA, cards: codesToCards(selCodes) }];
+        return res;
+      }
+    }
+    // 2) ไม่ได้เลือก → เสนอชุดที่มี anchor
+    var f = all.filter(function(m){ return m.cards.some(function(c){ return c.code === anchor; }); });
     res.melds = f;
     if (f.length === 0) {
-      var hasSpeto = pickedCodes.some(function(c){ return isSpetoCode(c); });
-      res.emptyReason = 'ไพ่ที่หยิบมาจากกองทิ้ง (' + pickedCodes.join(', ') + ') ไม่สามารถเกิดเป็นชุดได้'
-        + (hasSpeto ? ' — สเปโตเข้าชุดเรียงไม่ได้ (เข้าชุดตองได้อย่างเดียว)' : '')
-        + ' · ลองกด "↩️ คืนไพ่ที่หยิบ" แล้วหยิบใบอื่น';
+      res.emptyReason = 'ต้องเกิดไพ่ใบแรกที่หยิบจากกองทิ้ง (' + anchor + ') — ไพ่ที่หยิบมาพร้อมกันเกิดหรือไม่ก็ได้'
+        + ' · ถ้าเกิดไม่ได้ กด "↩️ คืนไพ่ที่หยิบ" แล้วหยิบใบอื่น';
     }
     return res;
   }
