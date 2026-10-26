@@ -173,6 +173,13 @@ body {
 }
 .turn-indicator { font-weight: 700; color: var(--gold); font-size: 1rem; }
 .round-info { color: #aaa; font-size: 0.85rem; }
+/* FIX v59: ป้ายเวอร์ชัน client (กดเพื่อรีเฟรช) — กันเผลอทดสอบโค้ดเก่า */
+.gh-version {
+  font-size: .68rem; color: #9ad; font-weight: 700; letter-spacing: .5px;
+  background: rgba(0,0,0,.35); border: 1px solid rgba(154,221,255,.25);
+  border-radius: 999px; padding: 3px 9px; white-space: nowrap; cursor: pointer;
+}
+.gh-version:hover { color: #fff; border-color: rgba(154,221,255,.6); }
 
 /* FIX v46: กล่องคู่แข่ง 3 กล่องแยก (คนละกล่อง) ตาม layout ใหม่ */
 .opponents-grid {
@@ -859,6 +866,7 @@ body {
     <div class="score-row gh-scores" id="score-row"></div>
     <div class="gh-right">
       <span class="gh-roomcode">ห้อง <span id="game-room-code">------</span></span>
+      <span class="gh-version" id="client-version" title="เวอร์ชันนี้ — คลิกเพื่อรีเฟรช" onclick="location.reload(true)">v?</span>
       <button class="btn btn-secondary" onclick="leaveRoom()" style="padding:6px 14px;font-size:0.85rem">← ออก</button>
     </div>
   </div>
@@ -978,7 +986,7 @@ body {
 
 <script src="supabase.js?v=1"></script>
 <!-- FIX v41: กติกาโทษ -100 แบบใหม่ (2.1/2.2/2.3) — pure functions (ใช้เตือน UI + ใช้เป็นต้นแบบเดียวกับ SQL) -->
-<script src="speto-rules.js?v=58"></script>
-<script src="game-core.js?v=58"></script>
+<script src="speto-rules.js?v=59"></script>
+<script src="game-core.js?v=59"></script>
 </body>
 </html>

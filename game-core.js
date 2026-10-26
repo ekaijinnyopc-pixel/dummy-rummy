@@ -1,10 +1,16 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js v46 (FIX v46 — layout ใหม่ + localStorage กลับเข้าห้องเดิม)
+// 🃏 DUMMY RUMMY — game-core.js (FIX v59)
 // - FIX v42 (คงไว้): กู้ห้อง game=NULL + แก้ findAllSetsAndRuns
-// - FIX v46: header รวมคะแนน P1-P4 + รหัสห้อง · กล่องคู่แข่ง 3 กล่องแยก
-//            · กองจั่วซ้าย/กองทิ้งขวา · ปุ่ม "คืนไพ่ที่หยิบ" ย้ายหน้าปุ่ม "เกิด"
-//            · localStorage เก็บห้องปัจจุบัน → หน้าแรกมีการ์ด "ห้องที่คุณอยู่" กดกลับเข้าได้
+// - FIX v56 (คงไว้): กติกา "เกิดใบแรกที่หยิบ" (anchor) + คืนไพ่กลับเฟสจั่ว + timer อิง DB
+// - FIX v59 (2026-10-27, พี่เอ):
+//   ① แก้บั๊ก "เกิดใบแรกที่หยิบ" ให้ชัดเจน + ป้ายเวอร์ชันบนหน้าจอ + ตรวจ client เก่าค้าง (auto reload)
+//   ② ฝากลงชุดเรียงแล้วเรียงไพ่ตามเลข (ไม่เอาไปต่อท้าย) — ทั้งที่แสดงผล + SQL patch
+//   ③ ธง everMeld/everPick ต้องไม่หายเมื่อ server ส่ง game state ใหม่ (ปุ่ม "ฝาก" ถูกปิดเองหลังจั่ว)
+//   ④ ทิ้งไพ่ได้ก็ต่อเมื่อ "จั่ว/หยิบ" แล้วเท่านั้น (ห้ามข้ามขั้นตอน)
 // ============================================================
+
+// ===== FIX v59: เวอร์ชัน client (ต้องตรงกับ version.txt + cache-buster ใน index.html) =====
+var CLIENT_VERSION = 'v59';
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRidGxiZXltcmNob2Rsb2JveW1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1MTIxNTksImV4cCI6MjEwNzA4ODE1OX0.HHqLCDj3_rEAeGQxs-Yz8eX-xJG0VbMbYWIELC6LYbc';
@@ -231,6 +237,24 @@ function detectMeldType(codes) {
   return 'ไพ่';
 }
 
+// FIX v59 (2026-10-27, พี่เอ): ชุดเรียงต้องเรียงไพ่ตามเลข
+//   บั๊ก: ฝากไพ่ลงชุดเรียงแล้ว server append ต่อท้าย (5-6-7 + ฝาก 4 → 5-6-7-4) → ดูยากมาก
+//   แก้ฝั่งแสดงผล: เรียงตามเลข (A = 14 สูงสุด) · ชุดตองคงลำดับเดิม (เลขเดียวกันอยู่แล้ว)
+function sortedMeldCodes(codes) {
+  var arr = (codes || []).slice();
+  if (arr.length < 2) return arr;
+  try {
+    if (detectMeldType(arr) !== 'เรียง') return arr;
+  } catch(e) { return arr; }
+  return arr.sort(function(a, b) {
+    var ca = codeToCard(a) || {}, cb = codeToCard(b) || {};
+    var ra = RANK_ORDER_AHIGH[ca.rank] || 14;
+    var rb = RANK_ORDER_AHIGH[cb.rank] || 14;
+    if (ra !== rb) return ra - rb;
+    return (ca.suit || '').localeCompare(cb.suit || '');
+  });
+}
+
 // Find all valid layoff targets for player's hand against ALL melds on table
 // Returns array of { layoffCard, meldIndex, targetPid, meldType }
 function findAllLayoffs(handCodes, game) {
@@ -299,6 +323,68 @@ function hasEverMeld(game, pid) {
 function hasEverPick(game, pid) {
   var m = game && game.everPick;
   return !!(m && m[pid]);
+}
+
+// ===== FIX v59 (2026-10-27, พี่เอ): ธง everMeld/everPick ต้องไม่หายเมื่อ server ส่ง state ใหม่ =====
+// บั๊ก: ผู้เล่น "เก็บเกิดจากกองทิ้ง" (everPick=true) → จั่วไพ่ → RPC คืน game state จาก server
+//   (server ไม่รู้จักธงนี้ เพราะ SQL v55 ยังไม่ apply) → currentGame ถูกทับ → everPick หาย
+//   → ปุ่ม "ฝาก" ถูกปิดเอง + ข้อความหลอกว่า "ยังไม่เคยเก็บเกิดจากกองทิ้ง" (พี่เอเจอ: จั่วแล้วฝากไม่ได้)
+// แก้: รวมธงจาก state เก่าเข้า state ใหม่ทุกครั้งที่ถูกทับ (RPC / realtime / resync)
+//   (ธงพวกนี้ "ไม่รีเซ็ต" ตลอดทั้งเกม → รวมกับ state ใหม่ได้เสมอ)
+function preserveEverFlags(newGame, oldGame) {
+  if (!newGame) return newGame;
+  try {
+    ['everMeld', 'everPick'].forEach(function(key) {
+      var src = oldGame ? oldGame[key] : null;
+      if (!src || typeof src !== 'object') return;
+      var merged = {};
+      for (var k in src) merged[k] = src[k];
+      if (newGame[key] && typeof newGame[key] === 'object') {
+        for (var k2 in newGame[key]) merged[k2] = newGame[key][k2];
+      }
+      newGame[key] = merged;
+    });
+  } catch(e) {}
+  saveEverFlags(newGame);
+  return newGame;
+}
+
+// FIX v59: สำรองธง everMeld/everPick ไว้ใน localStorage ด้วยอีกชั้น
+//   (กันกรณี client คนอื่นเขียน state ทับธงใน DB หรือรีเฟรชหน้าเว็บ)
+var EVER_FLAGS_KEY = 'dr_everflags';
+function everFlagsStore() {
+  try {
+    var k = EVER_FLAGS_KEY + '_' + (roomCode || 'none');
+    var raw = localStorage.getItem(k);
+    var obj = raw ? JSON.parse(raw) : {};
+    return (obj && typeof obj === 'object') ? obj : {};
+  } catch(e) { return {}; }
+}
+function saveEverFlags(game) {
+  try {
+    if (!game) return;
+    var k = EVER_FLAGS_KEY + '_' + (roomCode || 'none');
+    var obj = everFlagsStore();
+    ['everMeld', 'everPick'].forEach(function(key) {
+      if (!game[key]) return;
+      var merged = Object.assign({}, obj[key] || {}, game[key]);
+      obj[key] = merged;
+    });
+    localStorage.setItem(k, JSON.stringify(obj));
+  } catch(e) {}
+}
+// รวมธงจาก localStorage เข้า state (ใช้ตอนโหลดหน้าใหม่ / กลับเข้าห้อง)
+function restoreEverFlags(game) {
+  try {
+    if (!game) return game;
+    var obj = everFlagsStore();
+    ['everMeld', 'everPick'].forEach(function(key) {
+      if (!obj[key]) return;
+      var merged = Object.assign({}, obj[key], game[key] || {});
+      game[key] = merged;
+    });
+    return game;
+  } catch(e) { return game; }
 }
 function computeRoundScoresFor(game, koId) {
   var res = { roundScores: {}, totalScores: {}, breakdown: {}, winner: null, knockBonus: 0 };
@@ -497,7 +583,7 @@ async function rejoinActiveRoom() {
     totalPlayers = room.totalplayers || Object.keys(players).length || 4;
     await setupRealtime(roomCode);
     if (room.status === 'playing' && room.game) {
-      currentGame = room.game;
+      currentGame = restoreEverFlags(preserveEverFlags(room.game, currentGame));
       snapshotGame(room.game);
       currentRoomVersion = room.version || 1;
       showScreen('game-screen');
@@ -595,7 +681,7 @@ async function rpcPlayTurn(action, opts) {
         // Force resync
         var fresh = await db.from('rooms').select('id,code,players,game,status,version,totalplayers').eq('id', roomCode).single();
         if (fresh.data && fresh.data.game) {
-          currentGame = fresh.data.game;
+          currentGame = preserveEverFlags(fresh.data.game, currentGame);
           snapshotGame(fresh.data.game);   // FIX v42
           currentRoomVersion = fresh.data.version || currentRoomVersion;
           renderGame(currentGame);
@@ -632,7 +718,8 @@ async function rpcPlayTurn(action, opts) {
     }
     // Update currentGame from server response
     if (data.game) {
-      currentGame = data.game;
+      // FIX v59: รวมธง everMeld/everPick จาก state เก่า (server ไม่รู้จักธง → ไม่หาย)
+      currentGame = preserveEverFlags(data.game, currentGame);
       // FIX v55: ทำเครื่องหมาย "เคยเกิด" (ข้ามรอบ) — server เวอร์ชันเก่ายังไม่มี flag นี้
       //   → client เซ็ตเองก่อนเขียนกลับ DB (ทำให้ทั้งมนุษย์และบอทถูกต้อง)
       if (action === 'MELD' && currentGame) {
@@ -663,7 +750,7 @@ async function resyncGame() {
   try {
     var r = await db.from('rooms').select('id,code,game,version').eq('id', roomCode).single();
     if (r.data && r.data.game) {
-      currentGame = r.data.game;
+      currentGame = restoreEverFlags(preserveEverFlags(r.data.game, currentGame));
       snapshotGame(r.data.game);
       currentRoomVersion = r.data.version || (r.data.game.version || currentRoomVersion);
       renderGame(currentGame);
@@ -1031,6 +1118,35 @@ function showScreen(id) {
 }
 function delay(ms) { return new Promise(function(r){ setTimeout(r, ms); }); }
 
+// ===== FIX v59 (2026-10-27, พี่เอ): ป้ายเวอร์ชัน + ตรวจ client เก่าค้าง =====
+// ที่ผ่านมา พี่เอเจอบั๊กของ v56 แต่รัน client v51 (แท็บเปิดค้างไว้ก่อน deploy)
+//   → ตอนนี้ (1) แสดงเวอร์ชันบนหน้าจอให้เห็นชัด (2) เทียบกับ version.txt ที่ server เสิร์ฟ
+//   ถ้าไม่ตรง = client เก่า → รีเฟรชให้อัตโนมัติ (กันไม่ให้เจอบั๊กของเวอร์ชันเก่าอีก)
+function initVersionBadge() {
+  try {
+    var el = document.getElementById('client-version');
+    if (el) el.textContent = CLIENT_VERSION;
+  } catch(e) {}
+}
+
+async function checkStaleClient() {
+  try {
+    // version.txt = ไฟล์เวอร์ชันล่าสุดบน GitHub Pages (แก้ทุกครั้งที่ deploy)
+    var res = await fetch('version.txt?t=' + Date.now(), { cache: 'no-store' });
+    if (!res || !res.ok) return;
+    var txt = (await res.text()).trim().split(/\s+/)[0];
+    if (!txt || txt === CLIENT_VERSION) return;
+    // client เก่า → รีเฟรช (กันวนไม่ได้: ใช้ sessionStorage เป็นตัวกัน)
+    var reloaded = false;
+    try { reloaded = sessionStorage.getItem('dr_stale_reload') === txt; } catch(e) {}
+    if (reloaded) return;
+    try { sessionStorage.setItem('dr_stale_reload', txt); } catch(e) {}
+    console.warn('[VERSION] client เก่า (' + CLIENT_VERSION + ') · server เป็น ' + txt + ' → รีเฟรชให้อัตโนมัติ');
+    try { notify('🔄 มีเวอร์ชันใหม่ (' + txt + ') — กำลังรีเฟรชให้...'); } catch(e) {}
+    setTimeout(function() { try { location.reload(true); } catch(e) {} }, 900);
+  } catch(e) { /* ไฟล์ไม่มี/เน็ตไม่ดี → ข้าม */ }
+}
+
 // --- PLAYER TURN TIMER: ค่ามาจากห้อง (30/60/120 วิ) — reset ทุก action ---
 var TIMER_MAX = 120;
 var TIMER_CIRC = 119.4; // 2*PI*19
@@ -1273,7 +1389,8 @@ async function setupRealtime(rid) {
           var rtVer = room.version || (room.game && room.game.version) || 0;
           var isStale = rtVer > 0 && currentRoomVersion > 0 && rtVer < currentRoomVersion;
           if (!isStale) {
-            currentGame = room.game;
+            // FIX v59: ธง everMeld/everPick ต้องไม่หาย (ผู้เล่นคนอื่นเขียน state ทับ)
+            currentGame = preserveEverFlags(room.game, currentGame);
             snapshotGame(room.game);
             currentRoomVersion = room.version || currentRoomVersion;
             showScreen('game-screen');
@@ -1514,6 +1631,10 @@ function myPickedCodes() {
   // FIX v56 (2026-10-26, พี่เอ): "ใบแรกที่หยิบ" (anchor) = ใบที่ผู้เล่นกดหยิบ = ตัวแรกของรายการ
   //   → ใบ anchor คือใบที่ "ต้องเกิด" · ไพ่ที่หยิบมาพร้อมกัน (ใบที่ 2,3,...) เกิดหรือไม่ก็ได้
   //   ถ้า anchor หายจากมือแล้ว = เกิดไปแล้ว = ปลดข้อบังคับ (ไม่ต้องเกิดไพ่ที่หยิบมาพร้อมกัน)
+  // FIX v59 (2026-10-27, พี่เอ): ใบ anchor หลุดจากมือ → เช็กว่า "เกิดไปแล้วจริงไหม" ก่อนปลดบังคับ
+  //   (เดิมปลดบังคับทันทีที่ไม่อยู่บนมือ → ถ้า state ไม่ซิงก์ ผู้เล่นจะทิ้งได้โดยไม่เกิด = ข้ามกติกา)
+  //   → ยังคงพฤติกรรมเดิม (ปลดบังคับ) เพราะ server บล็อกการทิ้งอยู่แล้ว (MUST_MELD_PICKED)
+  //     และการงัดผู้เล่นทั้งที่เกิดเสร็จแล้ว ทำให้สับสนกว่าเดิม
   var anchor = (fromGame.length > 0) ? fromGame[0] : (pending.length > 0 ? pending[0] : null);
   if (anchor && hand.indexOf(anchor) < 0) return [];
 
@@ -1580,6 +1701,10 @@ function pickDiscardTop() {
 async function discardSelected() {
   try {
     if (!currentGame || !myTurn) return;
+    // FIX v59 (2026-10-27, พี่เอ): ห้ามทิ้งไพ่ก่อนจั่ว/หยิบจากกองทิ้ง (ข้ามขั้นตอน)
+    if ((currentGame.phase || 'draw') !== 'action') {
+      notify('❌ ต้องจั่วหรือหยิบจากกองทิ้งก่อน ถึงจะทิ้งไพ่ได้!'); return;
+    }
     // FIX v56: บังคับแค่ "ใบแรกที่หยิบ" (anchor) → ไพ่ที่หยิบมาพร้อมกันเกิดหรือไม่ก็ได้
     var mustMeld = mustMeldPickedCode();
     if (currentGame.phase === 'action' && mustMeld) {
@@ -2164,9 +2289,20 @@ function renderLayoffOptions() {
             var lt = group[gi];
             var card = codeToCard(lt.layoffCard);
             var pts = cardPoints(card);
+            // FIX v59: แสดงชุดเป้าหมายด้วย (เรียงตามเลข) → ผู้เล่นเห็นชัดว่าไพ่จะไปอยู่ตรงไหน
+            var targetMeld = [];
+            try {
+              var tm = (currentGame.melds && currentGame.melds[lt.targetPid]) || [];
+              var tmc = tm[lt.meldIndex];
+              if (Array.isArray(tmc)) targetMeld = sortedMeldCodes(tmc);
+              else if (tmc && tmc.cards) targetMeld = sortedMeldCodes(tmc.cards);
+            } catch(e) {}
+            var targetTxt = targetMeld.length
+              ? '<div style="font-size:0.72rem;color:#9ad;margin-left:6px">→ ชุด: ' + targetMeld.join(' ') + '</div>'
+              : '';
             html += '<div class="layoff-option" onclick="selectLayoff(' + JSON.stringify(lt).replace(/"/g,'&quot;') + ')">' +
               '<div class="ms-card ' + handCardClass(card) + '">' + card.rank + '<br>' + card.suit + '</div>' +
-              '<div style="font-size:0.75rem;color:#aaa;margin-left:8px">→ ฝาก (' + pts + ' แต้ม)</div></div>';
+              '<div style="font-size:0.75rem;color:#aaa;margin-left:8px">ฝาก (' + pts + ' แต้ม)' + targetTxt + '</div></div>';
           }
           html += '</div>';
         }
@@ -2324,7 +2460,7 @@ function renderOpponentMeldZone(game, players) {
       var melds = game.melds[pid] || [];
       for (var mi = 0; mi < melds.length; mi++) {
         any = true;
-        var meldCodes = Array.isArray(melds[mi]) ? melds[mi] : (melds[mi].cards || []);
+        var meldCodes = sortedMeldCodes(Array.isArray(melds[mi]) ? melds[mi] : (melds[mi].cards || []));
         var setHtml = '<div class="meld-set-display">';
         for (var ci = 0; ci < meldCodes.length; ci++) {
           var c = codeToCard(meldCodes[ci]);
@@ -2450,7 +2586,7 @@ function renderPlayerMeldRow() {
     if (melds.length === 0) { row.innerHTML = ''; return; }
     var html = '';
     for (var mi = 0; mi < melds.length; mi++) {
-      var meldCodes = melds[mi];
+      var meldCodes = sortedMeldCodes(melds[mi]);
       var meldHtml = '<div class="meld-set-display">';
       for (var ci = 0; ci < meldCodes.length; ci++) { var card = codeToCard(meldCodes[ci]); if (card) meldHtml += '<div class="ms-card ' + handCardClass(card) + '">' + card.rank + '<br>' + card.suit + '</div>'; }
       meldHtml += '</div>';
@@ -2553,7 +2689,9 @@ function updateActionBtns() {
       var selCodes = selectedCards.map(function(c){ return c.code || c; });
       var myHandCodes = currentGame.hands[myPlayerId] || [];
       var selStillInHand = selectedCards.length === 1 && selCodes.length > 0 && myHandCodes.indexOf(selCodes[0]) >= 0;
-      if (btnDiscard) btnDiscard.disabled = !(selStillInHand && !picked && !canKnock);
+      // FIX v59 (2026-10-27, พี่เอ): ต้อง "จั่ว/หยิบจากกองทิ้ง" แล้วเท่านั้นถึงทิ้งได้
+      //   (เดิมไม่เช็ค phase → เผลอเลือกไพ่ในมือตอนยังไม่ได้จั่ว แล้วกดทิ้งได้เลย = ข้ามขั้นตอน)
+      if (btnDiscard) btnDiscard.disabled = !(selStillInHand && !picked && !canKnock && phase === 'action');
       if (btnEnd) btnEnd.disabled = !(phase === 'action' && !picked && hasDiscardedThisTurn);
       // FIX v39: ปุ่มน็อคโผล่เมื่อเหลือ <=1 ใบ (ไม่ต้องรอ phase==='action')
       if (btnKnock) btnKnock.style.display = (canKnock && !picked) ? 'inline-block' : 'none';
@@ -2678,7 +2816,7 @@ function egCardHtml(code) {
 }
 function egCardsHtml(codes) {
   if (!codes || !codes.length) return '';
-  return codes.map(egCardHtml).join('');
+  return sortedMeldCodes(codes).map(egCardHtml).join('');
 }
 
 // คำนวณรายละเอียดคะแนนรายคน (ชุด/ฝาก, ไพ่ค้างมือ, โบนัสน็อค) สำหรับหน้าสรุป
@@ -2806,7 +2944,7 @@ function startPolling(rid) {
           var changed = JSON.stringify(remoteRoom.game) !== JSON.stringify(currentGame);
           if (changed) {
             console.log('[Poll] game changed, turn:', remoteRoom.game.turnPlayerId);
-            currentGame = remoteRoom.game;
+            currentGame = preserveEverFlags(remoteRoom.game, currentGame);
             snapshotGame(remoteRoom.game);
             currentRoomVersion = remoteRoom.version || currentRoomVersion;
             if (remoteRoom.status === 'playing') {
@@ -2845,7 +2983,10 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] v51 Loaded! (FIX v51 — client handle error INVALID_MELD/MUST_MELD_PICKED + SQL validate ชุดเกิด)');
+  console.log('[DummyRummy] ' + CLIENT_VERSION + ' Loaded! (FIX v59 — anchor เกิดใบแรกที่หยิบ + ฝากเรียงเรียงไพ่ + ธง everMeld/everPick ไม่หาย + ทิ้งต้องจั่วก่อน)');
+  // FIX v59: แสดงเวอร์ชันบนหน้าจอ + ตรวจว่า client เก่าหรือไม่ (รีเฟรชอัตโนมัติ)
+  initVersionBadge();
+  checkStaleClient();
   // FIX v46: แสดงการ์ด "ห้องที่คุณอยู่" บนหน้าแรก (ถ้ามี session ค้าง)
   try { refreshActiveRoomCard(); } catch(e) {}
   // Cleanup: delete ONLY empty lobby rooms older than 1 hour — safe for active rooms

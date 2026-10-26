@@ -1,6 +1,9 @@
 tools/*
 # เก็บเฉพาะไฟล์เทสต์ที่ปลอดภัย (ไม่มี secret) ไว้ใน git
 !tools/test-meld-flow.js
+!tools/test-v59.js
+!tools/test-v59.sql
+!tools/repro-live-state.js
 !tools/test-v55-rules.js
 !tools/test-v55-client.js
 !tools/test-v55-integration.js
