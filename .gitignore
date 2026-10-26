@@ -16,3 +16,4 @@ tools/*
 !tools/check-stuck-rooms.py
 !tools/cleanup-abandoned-rooms.py
 !tools/simulate-live-state.sql
+!tools/verify-live-sql.sql
