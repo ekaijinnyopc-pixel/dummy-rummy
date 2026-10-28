@@ -1,5 +1,5 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js (FIX v59)
+// 🃏 DUMMY RUMMY — game-core.js (FIX v60)
 // - FIX v42 (คงไว้): กู้ห้อง game=NULL + แก้ findAllSetsAndRuns
 // - FIX v56 (คงไว้): กติกา "เกิดใบแรกที่หยิบ" (anchor) + คืนไพ่กลับเฟสจั่ว + timer อิง DB
 // - FIX v59 (2026-10-27, พี่เอ):
@@ -7,10 +7,14 @@
 //   ② ฝากลงชุดเรียงแล้วเรียงไพ่ตามเลข (ไม่เอาไปต่อท้าย) — ทั้งที่แสดงผล + SQL patch
 //   ③ ธง everMeld/everPick ต้องไม่หายเมื่อ server ส่ง game state ใหม่ (ปุ่ม "ฝาก" ถูกปิดเองหลังจั่ว)
 //   ④ ทิ้งไพ่ได้ก็ต่อเมื่อ "จั่ว/หยิบ" แล้วเท่านั้น (ห้ามข้ามขั้นตอน)
+// - FIX v60 (2026-10-28, พี่เอ):
+//   ① เลิกบล็อก "หยิบใบที่ยังเกิดไม่ได้" ฝั่ง client — ให้ server เป็นเจ้าของกติกา (MUST_MELD_ANCHOR)
+//   ② อธิบายเหตุผลที่เกิดไม่ได้ (ตองไม่ครบ / สเปโตเข้าชุดเรียงไม่ได้ / เลขไม่เรียงต่อกัน)
+//   ③ ดัก error MUST_MELD_ANCHOR จาก server → ข้อความชัดเจน + เปิด modal เกิด
 // ============================================================
 
 // ===== FIX v59: เวอร์ชัน client (ต้องตรงกับ version.txt + cache-buster ใน index.html) =====
-var CLIENT_VERSION = 'v59';
+var CLIENT_VERSION = 'v60';
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRidGxiZXltcmNob2Rsb2JveW1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1MTIxNTksImV4cCI6MjEwNzA4ODE1OX0.HHqLCDj3_rEAeGQxs-Yz8eX-xJG0VbMbYWIELC6LYbc';
@@ -203,6 +207,43 @@ function canMeldWithPicked(pickedCodes, handCodes) {
     if (meldCodes.indexOf(anchor) >= 0) return melds[i];
   }
   return null;
+}
+
+// FIX v60 (2026-10-28, พี่เอ): อธิบายว่าทำไม "ใบแรกที่หยิบ" (anchor) เกิดไม่ได้
+//   เดิมข้อความเดียวกันทุกกรณี → ผู้เล่นคิดว่าเกมพัง (เคสสเปโตหวาดว่าเกมบั๊ก)
+//   → แยกสาเหตุ: ตองไม่ครบ 3 / สเปโตเข้าชุดเรียงไม่ได้ / สี-เลขไม่เรียงต่อกัน
+function explainAnchorMeldFail(anchor, poolCodes) {
+  var seen = {}, pool = [];
+  for (var i = 0; i < (poolCodes || []).length; i++) {
+    var pc = poolCodes[i];
+    if (!pc || seen[pc]) continue;
+    seen[pc] = true;
+    pool.push(pc);
+  }
+  var cards = codesToCards(pool);
+  var ac = null;
+  for (var j = 0; j < cards.length; j++) { if (cards[j].code === anchor) { ac = cards[j]; break; } }
+  if (!ac) return 'ไพ่ใบแรกที่หยิบ (' + anchor + ') ไม่อยู่บนมือแล้ว';
+  var parts = [];
+  var rankCount = 0, sameSuit = 0, nearRank = 0;
+  var aVal = RANK_ORDER_AHIGH[ac.rank] || 14;
+  for (var k = 0; k < cards.length; k++) {
+    var cc = cards[k];
+    if (cc.rank === ac.rank) rankCount++;
+    if (!isSpeto(cc) && cc.suit === ac.suit) {
+      sameSuit++;
+      if (Math.abs((RANK_ORDER_AHIGH[cc.rank] || 14) - aVal) <= 1) nearRank++;
+    }
+  }
+  if (isSpeto(ac)) {
+    parts.push('สเปโต (' + anchor + ') เข้าชุดเรียงไม่ได้ (เข้าได้แค่ชุดตอง)');
+    if (rankCount < 3) parts.push('ตองเลข ' + ac.rank + ' ยังไม่ครบ 3 ใบ (ตอนนี้มี ' + rankCount + ')');
+  } else {
+    if (rankCount < 3) parts.push('ตองเลข ' + ac.rank + ' ยังไม่ครบ 3 ใบ (ตอนนี้มี ' + rankCount + ')');
+    if (nearRank < 3) parts.push('ชุดเรียงต้องสีเดียวกันและเลขติดกัน 3+ ใบ (สีนี้มี ' + sameSuit + ' ใบ)');
+  }
+  if (!parts.length) parts.push('ยังไม่มีชุดที่เกิดได้สำหรับ ' + anchor);
+  return parts.join(' · ');
 }
 
 function detectMeldType(codes) {
@@ -702,6 +743,11 @@ async function rpcPlayTurn(action, opts) {
         openMeldModal();
       } else if (data && data.error === 'MUST_MELD_PICKED') {
         notify('⚠️ ต้องเกิดใบที่หยิบจากกองทิ้งก่อน!');
+        openMeldModal();
+      } else if (data && data.error === 'MUST_MELD_ANCHOR') {
+        // FIX v60 (2026-10-28, พี่เอ): server บล็อกการเกิดที่ไม่มี "ใบแรกที่หยิบ" → อธิบายให้เข้าใจ
+        var _anchorMsg = (data && data.details) ? String(data.details) : 'ต้องเกิดไพ่ใบแรกที่หยิบจากกองทิ้ง';
+        notify('❌ ' + _anchorMsg + ' — กด "↩️ คืนไพ่ที่หยิบ" แล้วหยิบใบอื่น หรือเกิดชุดที่มีใบนั้นอยู่');
         openMeldModal();
       } else if (data && data.error === 'ROOM_NOT_FOUND') {
         // FIX v42: rooms.game เป็น NULL → พยายามกู้ห้องแล้วลองใหม่
@@ -1662,10 +1708,13 @@ async function pickFromDiscard(idx) {
 
     var taken = discard.slice(idx);
     var handCodes = currentGame.hands[myPlayerId] || [];
+    // FIX v60 (2026-10-28, พี่เอ): เลิกบล็อก "หยิบ" ฝั่ง client — ให้ server เป็นเจ้าของกติกา
+    //   (เดิม client เข้มกว่า server → หยิบใบหัวกองทิ้งไม่ได้เลย ทั้งที่ server รับได้)
+    //   → เตือนเหตุผลที่ "ยังเกิดไม่ได้" ให้ผู้เล่นเข้าใจ แต่ไม่ขวางการหยิบ
     var meldable = canMeldWithPicked(taken, handCodes);
     if (!meldable) {
-      notify('❌ หยิบใบนี้ต้องเกิดได้ทันที! ลองใบอื่น');
-      return;
+      notify('⚠️ หยิบได้ แต่ยังเกิดไม่ได้ — ' + explainAnchorMeldFail(taken[0], handCodes.concat(taken))
+        + ' · ถ้าเกิดไม่ได้ กด "↩️ คืนไพ่ที่หยิบ" แล้วหยิบใบอื่น');
     }
 
     // FIX v36: ทำหยิบไพ่เองฝั่ง client แบบ atomic (RPC PICK_DISCARD ฝั่ง server ตัดไพ่ผิดจนไพ่หาย)
@@ -1708,7 +1757,7 @@ async function discardSelected() {
     // FIX v56: บังคับแค่ "ใบแรกที่หยิบ" (anchor) → ไพ่ที่หยิบมาพร้อมกันเกิดหรือไม่ก็ได้
     var mustMeld = mustMeldPickedCode();
     if (currentGame.phase === 'action' && mustMeld) {
-      notify('❌ ต้องเกิดไพ่ใบแรกที่หยิบจากกองทิ้ง (' + mustMeld + ') ก่อนทิ้ง!'); return;
+      notify('❌ ต้องเกิดไพ่ใบแรกที่หยิบจากกองทิ้ง (' + mustMeld + ') ก่อนทิ้ง! · ถ้าเกิดไม่ได้ กด "↩️ คืนไพ่ที่หยิบ"'); return;
     }
     if (selectedCards.length !== 1) { notify('เลือกไพ่ 1 ใบที่จะทิ้ง'); return; }
     var cardCode = selectedCards[0];
@@ -2069,7 +2118,9 @@ function getMeldOptions(pickedCodes, selCodes) {
     var f = all.filter(function(m){ return m.cards.some(function(c){ return c.code === anchor; }); });
     res.melds = f;
     if (f.length === 0) {
-      res.emptyReason = 'ต้องเกิดไพ่ใบแรกที่หยิบจากกองทิ้ง (' + anchor + ') — ไพ่ที่หยิบมาพร้อมกันเกิดหรือไม่ก็ได้'
+      // FIX v60 (2026-10-28, พี่เอ): บอกเหตุผลจริง (เดิมข้อความเดียวทุกกรณี → ผู้เล่นคิดว่าเกมพัง)
+      res.emptyReason = 'ใบแรกที่หยิบ (' + anchor + ') เกิดไม่ได้ — ' + explainAnchorMeldFail(anchor, pool)
+        + ' · ไพ่ที่หยิบมาพร้อมกันเกิดหรือไม่ก็ได้'
         + ' · ถ้าเกิดไม่ได้ กด "↩️ คืนไพ่ที่หยิบ" แล้วหยิบใบอื่น';
     }
     return res;
