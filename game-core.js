@@ -12,10 +12,13 @@
 //   ② อธิบายเหตุผลที่เกิดไม่ได้ (ตองไม่ครบ / สเปโตเข้าชุดเรียงไม่ได้ / เลขไม่เรียงต่อกัน)
 //   ③ ดัก error MUST_MELD_ANCHOR จาก server → ข้อความชัดเจน + เปิด modal เกิด
 // - FIX v61 (2026-10-28, พี่เอ): ดัก error CANNOT_LAYOFF_ANCHOR (server ห้ามฝาก anchor 10-28)
+// - FIX v62 (2026-10-28, พี่เอ): กองจั่วหมด = จบเกม + สรุปคะแนนทันที
+//   ① server ตรวจ "กองจั่วหมด" ถูกต้อง (COALESCE(array_length(...),0)) → จบเกมทันที
+//   ② client แสดงหน้าสรุปคะแนนเมื่อ server จบเกม (gameOver) + กันห้องค้าง (safety net)
 // ============================================================
 
 // ===== FIX v59: เวอร์ชัน client (ต้องตรงกับ version.txt + cache-buster ใน index.html) =====
-var CLIENT_VERSION = 'v61';
+var CLIENT_VERSION = 'v62';
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRidGxiZXltcmNob2Rsb2JveW1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1MTIxNTksImV4cCI6MjEwNzA4ODE1OX0.HHqLCDj3_rEAeGQxs-Yz8eX-xJG0VbMbYWIELC6LYbc';
@@ -1395,6 +1398,9 @@ async function autoPlayTimedOutPlayer(pid, isSelf) {
 function checkStalledTurn() {
   try {
     if (!currentGame || currentGame.status !== 'playing') return;
+    // FIX v62 (2026-10-28, พี่เอ): กองจั่วหมด = จบเกม + สรุปคะแนนทันที
+    //   (เช็คก่อนเช็คบอท เพราะห้องค้างแบบ XY7QTM เป็นตาบอท + deck=0)
+    if (!currentGame.deck || currentGame.deck.length === 0) { endGameByDeckEmpty(); return; }
     var pid = currentGame.turnPlayerId;
     if (!pid) return;
     noteTurnChange(pid);
@@ -1406,6 +1412,40 @@ function checkStalledTurn() {
     console.warn('[TIMEOUT] ผู้เล่น', pid, 'ค้างเกิน', Math.round(elapsed/1000), 'วิ → ระบบเล่นแทน');
     autoPlayTimedOutPlayer(pid, false);
   } catch(e) {}
+}
+
+// ===== FIX v62 (2026-10-28, พี่เอ): แสดงหน้าสรุปคะแนนจาก response ของ server =====
+//   ใช้เมื่อ server จบเกม (gameOver) — เช่น กองจั่วหมด
+async function showEndGameFromRpc(r) {
+  try {
+    if (!r) return;
+    var _pk = await db.from('rooms').select('players').eq('id', roomCode).single();
+    var _pl = (_pk && _pk.data && _pk.data.players) || {};
+    var _g = r.game || currentGame || {};
+    showEndGame(resolveEndGame({ players: _pl, game: _g }, {
+      winner: (r.winner !== undefined && r.winner !== null) ? r.winner : null,
+      totalScores: r.total_scores || _g.totalScores || _g.scores || {},
+      roundScores: r.round_scores || _g.roundScores || {}
+    }));
+  } catch(e) { console.error('showEndGameFromRpc error:', e); }
+}
+
+// FIX v62: safety net — ถ้าเห็นกองจั่วหมดในห้องที่ยัง playing ให้ขอ server จบเกม
+//   (กันห้องค้างแบบ XY7QTM แม้ไม่มีใครกดอะไร)
+var deckEmptyEndTried = false;
+async function endGameByDeckEmpty() {
+  try {
+    if (!currentGame || currentGame.status !== 'playing') return false;
+    if (!currentGame.deck || currentGame.deck.length > 0) { deckEmptyEndTried = false; return false; }
+    if (deckEmptyEndTried) return false;
+    deckEmptyEndTried = true;
+    var pid = currentGame.turnPlayerId || myPlayerId;
+    console.log('[FIX v62] กองจั่วหมด → ขอ server จบเกม + สรุปคะแนน (player=' + pid + ')');
+    var r = await rpcPlayTurn('DECK_EMPTY', { playerId: pid });
+    if (!r || !r.gameOver) { deckEmptyEndTried = false; return false; }
+    await showEndGameFromRpc(r);
+    return true;
+  } catch(e) { console.error('endGameByDeckEmpty error:', e); return false; }
 }
 
 function cardPts(c) {
@@ -1654,6 +1694,8 @@ async function drawCard() {
     if (!currentGame || !myTurn || currentGame.phase !== 'draw') return;
     var r = await rpcPlayTurn('DRAW_DECK');
     if (!r) return;
+    // FIX v62 (2026-10-28, พี่เอ): กองจั่วหมด = จบเกม + สรุปคะแนนทันที (server เป็นเจ้าของกติกา)
+    if (r.gameOver) { await showEndGameFromRpc(r); return; }
     if (r.deckEmpty) notify('📦 กองจั่วหมดแล้ว! ทิ้งไพ่ได้เลย');
     pendingPickedCodes = [];
     renderYourHand();
@@ -1937,6 +1979,15 @@ async function botPlay(botId) {
     var hand = codesToCards(handCodes);
     var pickedThisTurn = false;
 
+    // --- FIX v62 (2026-10-28, พี่เอ): กองจั่วหมด = จบเกม + สรุปคะแนนทันที
+    //   (ห้องค้างแบบ XY7QTM: bot นิ่งเพราะ deck=0 แต่ phase ยังเป็น draw)
+    if (!currentGame.deck || currentGame.deck.length === 0) {
+      botRunning[botId] = false;
+      var _de = await rpcPlayTurn('DECK_EMPTY', { playerId: botId });
+      if (_de && _de.gameOver) { await showEndGameFromRpc(_de); }
+      return;
+    }
+
     // --- DRAW: try pick from discard first ---
     if (currentGame.discardPile && currentGame.discardPile.length > 0) {
       var discard = currentGame.discardPile;
@@ -1983,6 +2034,8 @@ async function botPlay(botId) {
     if (!pickedThisTurn) {
       var r = await rpcPlayTurn('DRAW_DECK', { playerId: botId });
       if (!r) { botRunning[botId] = false; return; }
+      // FIX v62: จั่วไพ่ใบสุดท้าย → กองจั่วหมด → จบเกม + สรุปคะแนนทันที
+      if (r.gameOver) { botRunning[botId] = false; await showEndGameFromRpc(r); return; }
       if (!r.deckEmpty) {
         hand = codesToCards(currentGame.hands[botId] || []);
         handCodes = hand.map(function(c){ return c.code; });
@@ -2855,6 +2908,15 @@ function showEndGame(data) {
       var tail = disc.slice(-4);
       disEl.innerHTML = tail.length ? tail.map(function(c) { return egCardHtml(c); }).join('') : '<span class="eg-empty">ว่าง</span>';
     }
+    // FIX v62 (2026-10-28, พี่เอ): บอกเหตุผลที่จบเกม (กองจั่วหมด)
+    try {
+      var _h2 = document.querySelector('.endgame-modal h2');
+      if (_h2) {
+        _h2.innerHTML = (currentGame && currentGame.endReason === 'DECK_EMPTY')
+          ? '📦 กองจั่วหมด — สรุปผลรอบ'
+          : '🏆 สรุปผลรอบ';
+      }
+    } catch(e2) {}
     var modal = document.getElementById('endgame-modal');
     if (modal) modal.classList.add('active');
   } catch(e) { console.error('showEndGame error:', e); }
@@ -3040,7 +3102,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] ' + CLIENT_VERSION + ' Loaded! (FIX v61 — หยิบใบที่ยังเกิดไม่ได้ได้ + อธิบายเหตุผล + ดัก MUST_MELD_ANCHOR / CANNOT_LAYOFF_ANCHOR)');
+  console.log('[DummyRummy] ' + CLIENT_VERSION + ' Loaded! (FIX v62 — กองจั่วหมด = จบเกม + สรุปคะแนนทันที + กันห้องค้าง)');
   // FIX v59: แสดงเวอร์ชันบนหน้าจอ + ตรวจว่า client เก่าหรือไม่ (รีเฟรชอัตโนมัติ)
   initVersionBadge();
   checkStaleClient();
