@@ -15,10 +15,16 @@
 // - FIX v62 (2026-10-28, พี่เอ): กองจั่วหมด = จบเกม + สรุปคะแนนทันที
 //   ① server ตรวจ "กองจั่วหมด" ถูกต้อง (COALESCE(array_length(...),0)) → จบเกมทันที
 //   ② client แสดงหน้าสรุปคะแนนเมื่อ server จบเกม (gameOver) + กันห้องค้าง (safety net)
+// - FIX v64 (2026-10-28, พี่เอ):
+//   ① "ฝาก" ลงชุดของตัวเองได้ (ตัวเลือก A = อนุญาต · ยืนยันแล้ว) — server เดิมมี guard LAYOFF_OWN_MELD
+//      → ลบ guard ใน FIX-v64-2026-10-28.sql (client ไม่เคยกรองอยู่แล้ว → เดิม client/server ไม่ตรงกัน)
+//      → ดัก error LAYOFF_OWN_MELD (กรณี server ยังไม่อัปเดต) ให้ข้อความชัดเจน
+//   ② หลัง "ฝาก" สำเร็จ ปุ่ม "🗑️ ทิ้ง" ไม่ค้างเป็นสีเทาแล้ว (ต้องกด F5 ก่อนเดิม)
+//      → pruneSelectedCards(): ตัดไพ่ที่หลุดจากมือออกจาก "ที่เลือก" (เดิมค้าง → ทิ้งไม่ได้จนกว่าจะ F5)
 // ============================================================
 
 // ===== FIX v59: เวอร์ชัน client (ต้องตรงกับ version.txt + cache-buster ใน index.html) =====
-var CLIENT_VERSION = 'v63';
+var CLIENT_VERSION = 'v64';
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRidGxiZXltcmNob2Rsb2JveW1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1MTIxNTksImV4cCI6MjEwNzA4ODE1OX0.HHqLCDj3_rEAeGQxs-Yz8eX-xJG0VbMbYWIELC6LYbc';
@@ -758,6 +764,12 @@ async function rpcPlayTurn(action, opts) {
         //   กติกา: anchor ต้อง "เกิด" เสมอ (ฝาก = ไม่ใช่การเกิด)
         var _loMsg = (data && data.details) ? String(data.details) : 'ไพ่ใบแรกที่หยิบต้อง "เกิด" ไม่ใช่ "ฝาก"';
         notify('❌ ' + _loMsg + ' · เกิดชุดที่มีใบนั้นก่อน หรือกด "↩️ คืนไพ่ที่หยิบ"');
+      } else if (data && data.error === 'LAYOFF_OWN_MELD') {
+        // FIX v64 (2026-10-28, พี่เอ): server รุ่นเก่ายังมี guard "ห้ามฝากลงชุดของตัวเอง"
+        //   กติกาที่ยืนยันแล้ว = ทางเลือก A (อนุญาต) → ต้องรัน FIX-v64 SQL บน live
+        //   (ถ้ายังไม่รัน จะบอกผู้เล่นให้รู้ว่าเป็นเพราะ server ยังไม่อัปเดต ไม่ใช่กดผิด)
+        var _ownMsg = (data && data.details) ? String(data.details) : 'ฝากลงชุดของตัวเองไม่ได้';
+        notify('❌ ' + _ownMsg + ' · กำลังอัปเดตระบบฝาก (รอ SQL บน live) — ระหว่างนี้ฝากลงชุดของเพื่อนได้ตามปกติ');
       } else if (data && data.error === 'ROOM_NOT_FOUND') {
         // FIX v42: rooms.game เป็น NULL → พยายามกู้ห้องแล้วลองใหม่
         console.warn('[RPC] ROOM_NOT_FOUND — game เป็น NULL, กำลังกู้ห้อง');
@@ -2372,7 +2384,7 @@ function explainWhyDisabled() {
       if (spetoInHand.length > 0 && runsOnTable > 0) {
         msgs.push('💚 ฝากไม่ได้: สเปโต (' + spetoInHand.join(', ') + ') ฝากลงชุดเรียงไม่ได้ (เกิดเป็นชุดตองแทน)');
       } else {
-        msgs.push('💚 ฝากไม่ได้: ไพ่ในมือไม่ต่อกับชุดเรียงของเพื่อน (เลขติดกัน + สีเดียวกัน)');
+        msgs.push('💚 ฝากไม่ได้: ไพ่ในมือไม่ต่อกับชุดเรียงของใครก็ได้ (เลขติดกัน + สีเดียวกัน) — ฝากลงชุดของตัวเองก็ได้');
       }
     }
 
@@ -2427,7 +2439,10 @@ function renderLayoffOptions() {
         for (var pid in byTarget) {
           var p = players[pid] || {};
           html += '<div style="margin-bottom:16px">';
-          html += '<div style="color:#ffd700;font-size:0.85rem;margin-bottom:8px">' + (p.name||'??') + ' ฝากไพ่:</div>';
+          // FIX v64 (2026-10-28, พี่เอ): ทางเลือก A = อนุญาตให้ฝากลงชุดของตัวเองได้ → แยกป้ายให้ชัด
+          var _ownMeld = (pid === myPlayerId);
+          var _whoLabel = _ownMeld ? 'ชุดของคุณ' : (p.name || '??');
+          html += '<div style="color:#ffd700;font-size:0.85rem;margin-bottom:8px">' + _whoLabel + ' ฝากไพ่:</div>';
           var group = byTarget[pid];
           for (var gi = 0; gi < group.length; gi++) {
             var lt = group[gi];
@@ -2468,8 +2483,15 @@ async function selectLayoff(lt) {
     closeLayoffModal();
     var card = codeToCard(lt.layoffCard);
     notify('💚 ฝาก ' + (card ? card.rank + card.suit : lt.layoffCard) + ' สำเร็จ!');
+    // FIX v64 (2026-10-28, พี่เอ): ไพ่ที่ฝากไปแล้ว "ไม่อยู่บนมือ" → ต้องตัดออกจากที่เลือก
+    //   (ไม่งั้น selectedCards ยังเก็บไพ่ใบเก่า → selStillInHand = false
+    //    → ปุ่ม "ทิ้ง" เทาค้าง และกดไพ่ใบอื่นก็ยังเทา (selectedCards.length = 2) → ต้องกด F5)
+    pruneSelectedCards();
+    // FIX v64: server ไม่เปลี่ยน phase ใน branch LAYOFF → ยืนยันว่าเฟสยังเป็น "ทำรายการ"
+    if (currentGame && !currentGame.phase) currentGame.phase = 'action';
     renderYourHand();
     renderPlayerMeldRow();
+    renderDiscardPile(currentGame);
     updateLayoffTargets();
     updateActionBtns();
     resetPlayerTimer();
@@ -2777,6 +2799,9 @@ function toggleSelect(code) {
   try {
     var hand = currentGame && currentGame.hands ? (currentGame.hands[myPlayerId] || []) : [];
     if (hand.indexOf(code) === -1) return;
+    // FIX v64 (2026-10-28, พี่เอ): ตัดไพ่ที่หลุดจากมือออกจาก "ที่เลือก" ก่อนเสมอ
+    //   (เช่น ไพ่ที่เพิ่ง "ฝาก" ไปแล้ว) → ไม่งั้น selectedCards.length โดนนับผิด → ปุ่ม "ทิ้ง" เทาค้าง
+    pruneSelectedCards();
     // FIX v49: เลือกไพ่ที่หยิบจากกองทิ้งมาได้ (เพื่อใช้กับปุ่ม "📐 วาง")
     //   แต่ยัง "ทิ้ง" ไพ่ใบนั้นไม่ได้ — เดินทางนี้ถูกบล็อกที่ discardSelected()/updateActionBtns() อยู่แล้ว
     var idx = selectedCards.indexOf(code);
@@ -2784,6 +2809,26 @@ function toggleSelect(code) {
     renderYourHand();
     updateActionBtns();
   } catch(e) { console.error('toggleSelect error:', e); }
+}
+
+// ===== FIX v64 (2026-10-28, พี่เอ): ตัด "ที่เลือก" ที่ไม่อยู่บนมือแล้วออก =====
+// บั๊ก: หลัง "ฝาก" (LAYOFF) สำเร็จ ไพ่ใบที่เลือกไว้ถูกฝากไปแล้ว → ไม่อยู่บนมือ
+//   → selectedCards ยังเก็บไพ่ใบนั้นไว้ → selStillInHand = false
+//   → ปุ่ม "🗑️ ทิ้ง" ถูก disable สีเทา → แม้กดไพ่ใบอื่นก็ยังเทา (selectedCards.length = 2)
+//   → ต้องกด F5 (รีเฟรช = ล้าง selectedCards) จึงจะทิ้งไพ่ได้อีก
+// แก้: ตัดไพ่ที่ไม่อยู่บนมือออกทุกครั้งที่มือเปลี่ยน (ฝาก/เกิด/คืนไพ่/หยิบ)
+function pruneSelectedCards() {
+  try {
+    var hand = (currentGame && currentGame.hands && currentGame.hands[myPlayerId]) || [];
+    var kept = [];
+    for (var i = 0; i < selectedCards.length; i++) {
+      var c = selectedCards[i];
+      var code = (c && typeof c === 'object') ? c.code : c;
+      if (hand.indexOf(code) >= 0) kept.push(c);
+    }
+    selectedCards = kept;
+  } catch(e) {}
+  return selectedCards;
 }
 
 function updateActionBtns() {
@@ -3136,7 +3181,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] ' + CLIENT_VERSION + ' Loaded! (FIX v62 — กองจั่วหมด = จบเกม + สรุปคะแนนทันที + กันห้องค้าง)');
+  console.log('[DummyRummy] ' + CLIENT_VERSION + ' Loaded! (FIX v64 — ฝากลงชุดตัวเองได้ + ปุ่มทิ้งไม่ค้างหลังฝาก)');
   // FIX v59: แสดงเวอร์ชันบนหน้าจอ + ตรวจว่า client เก่าหรือไม่ (รีเฟรชอัตโนมัติ)
   initVersionBadge();
   checkStaleClient();

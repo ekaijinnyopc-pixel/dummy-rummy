@@ -14,6 +14,10 @@ tools/*
 !tools/test-rules-parity.js
 !tools/test-scoring-parity.js
 !tools/test-penalty-parity.js
+!tools/test-v62.js
+!tools/test-v64.js
+!tools/test-v64.sql
+!tools/test-v64-runner.sql
 !tools/SMOKE-TEST-LIVE.md
 !tools/check-stuck-detail.py
 !tools/check-stuck-rooms.py

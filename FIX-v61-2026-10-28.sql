@@ -609,14 +609,10 @@ BEGIN
         'details', 'ไพ่ใบแรกที่หยิบจากกองทิ้ง (' || p_card_code || ') ต้อง "เกิด" ไม่ใช่ "ฝาก"');
     END IF;
     -- ============================================================
-    -- OPTION B (รอพี่เอตัดสิน 2026-10-25): ห้าม "ฝาก" ลงชุดของตัวเอง
-    --   GAME-CONCEPT เขียนว่า "ฝากไพ่ลงชุดของคนอื่น" แต่ client+server เดิมอนุญาตให้ฝากลงชุดตัวเองได้
-    --   → ถ้าพี่เอเลือก "ห้าม" → ใส่ guard ตรงนี้ (ลบบรรทัดนี้ออกถ้าเลือก "อนุญาต")
+    -- FIX v64 (2026-10-28, พี่เอ): ทางเลือก A — "ฝาก" ลงชุดของตัวเองได้ (อนุญาต)
+    --   เดิมมี guard LAYOFF_OWN_MELD (ตัวเลือก B = ห้าม) → ลบออกตามที่พี่เอยืนยัน (อนุญาต)
+    --   (ไฟล์ฉบับเต็มที่พี่เอรันคือ FIX-v64-2026-10-28.sql)
     -- ============================================================
-    IF p_target_pid = p_player_id THEN
-      RETURN jsonb_build_object('ok', false, 'error', 'LAYOFF_OWN_MELD',
-        'details', 'ฝากลงชุดของตัวเองไม่ได้ (ต้องฝากลงชุดของผู้เล่นคนอื่น)');
-    END IF;
     v_p_meld_idx := p_target_meld_idx;
     -- FIX 2: กัน meld index หลุด/เกินช่วง (เดิมจะ error ตอน jsonb_array_elements_text)
     IF v_p_meld_idx < 0 OR v_p_meld_idx >= jsonb_array_length(COALESCE(v_melds->p_target_pid, '[]'::JSONB)) THEN
