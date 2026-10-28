@@ -477,6 +477,28 @@ body {
 @keyframes fadeIn { from { opacity: 0; transform: translateX(-50%) translateY(-10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
 
 /* Modal */
+/* ===== FIX v63 (2026-10-28, พี่เอ): ข้อตกลงการใช้งาน — ป้องกัน พ.ร.บ. การพนัน พ.ศ. 2478 มาตรา 12 ===== */
+.disclaimer-banner {
+  background: linear-gradient(135deg, rgba(255,193,7,.14), rgba(239,68,68,.12));
+  border: 1px solid rgba(255,193,7,.45);
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin: 14px 0;
+  text-align: center;
+}
+.disclaimer-banner.compact { padding: 8px 12px; margin: 8px 0; border-radius: 10px; }
+.disclaimer-title { color: #ffd700; font-weight: 800; font-size: 1rem; }
+.disclaimer-banner.compact .disclaimer-title { font-size: .86rem; }
+.disclaimer-text { color: #e8e8e8; font-size: .82rem; line-height: 1.55; margin-top: 6px; }
+.disclaimer-banner.compact .disclaimer-text { font-size: .73rem; margin-top: 3px; line-height: 1.45; }
+.disclaimer-banner b { color: #ffd700; }
+.disclaimer-modal { max-width: 560px; }
+.disclaimer-main { color: #ffd700; font-weight: 800; text-align: center; font-size: 1.06rem; margin: 0 0 6px; }
+.disclaimer-text-lg { color: #e8e8e8; font-size: .9rem; line-height: 1.7; text-align: left; }
+.disclaimer-text-lg ul { margin: 8px 0 0 20px; }
+.disclaimer-text-lg li { margin-bottom: 9px; }
+.disclaimer-text-lg b { color: #ffd700; }
+
 .modal-overlay {
   display: none;
   position: fixed;
@@ -756,6 +778,15 @@ body {
     <p>เล่นออนไลน์ real-time กับเพื่อนและ AI</p>
   </div>
 
+  <!-- FIX v63 (2026-10-28, พี่เอ): ข้อตกลงการใช้งาน — ห้ามเล่นพนันใดๆ (เห็นชัดบนหน้าแรก) -->
+  <div class="disclaimer-banner">
+    <div class="disclaimer-title">⚠️ ข้อตกลงการใช้งาน เพื่อความบันเทิง ห้ามเล่นพนันใดๆ</div>
+    <div class="disclaimer-text">
+      เกมนี้จัดทำขึ้นเพื่อ <b>ความบันเทิง</b> เท่านั้น <b>ห้ามเล่นพนันใด ๆ</b> และไม่มีการเดิมพันเงินจริง สินค้า หรือรางวัลที่มีมูลค่า<br>
+      ผู้ให้บริการไม่จัดให้มีการเล่นเกมพนัน (พ.ร.บ. การพนัน พ.ศ. 2478 มาตรา 12) · ไม่จัดให้มีการนำเข้าข้อมูลเกี่ยวกับคดีการพนัน (พ.ร.บ. ว่าด้วยความผิดเกี่ยวกับคอมพิวเตอร์ พ.ศ. 2550) · เล่นด้วยไพ่ตามพระราชบัญญัติไพ่ พ.ศ. 2486
+    </div>
+  </div>
+
   <!-- FIX v46: ห้องที่กำลังเล่น — กลับเข้าห้องเดิมได้หลังเน็ตหลุด/refresh -->
   <div class="form-card" id="active-room-card" style="display:none">
     <h3>🎯 ห้องที่คุณอยู่</h3>
@@ -801,8 +832,8 @@ body {
       </select>
       <div style="font-size:0.78rem;color:#8b8b8b;margin-top:6px">หมดเวลาแล้วระบบจะจั่ว+ทิ้งไพ่ให้อัตโนมัติ</div>
     </div>
-    <button class="btn btn-primary" style="width:100%" onclick="createRoom()">🎮 สร้างห้อง</button>
-    <button class="btn btn-secondary" style="width:100%;margin-top:10px" onclick="quickPlay()">⚡ เล่นเร็ว (เติมบอทให้)</button>
+    <button class="btn btn-primary" style="width:100%" onclick="openDisclaimerModal('createRoom')">🎮 สร้างห้อง</button>
+    <button class="btn btn-secondary" style="width:100%;margin-top:10px" onclick="openDisclaimerModal('quickPlay')">⚡ เล่นเร็ว (เติมบอทให้)</button>
   </div>
 
   <div class="divider">— หรือ —</div>
@@ -818,6 +849,27 @@ body {
       <input type="text" id="join-name" placeholder="ใส่ชื่อของคุณ" maxlength="20">
     </div>
     <button class="btn btn-secondary" style="width:100%" onclick="joinRoom()">🚪 เข้าห้อง</button>
+  </div>
+</div>
+
+<!-- ===== DISCLAIMER MODAL (FIX v63) ===== -->
+<div class="modal-overlay" id="disclaimer-modal">
+  <div class="modal disclaimer-modal">
+    <h3>⚠️ ข้อตกลงการใช้งาน</h3>
+    <p class="disclaimer-main">ข้อตกลงการใช้งาน เพื่อความบันเทิง ห้ามเล่นพนันใดๆ</p>
+    <div class="disclaimer-text-lg">
+      <ul>
+        <li>เกมนี้จัดทำขึ้นเพื่อ <b>ความบันเทิง</b> เท่านั้น <b>ห้ามเล่นพนันใด ๆ</b></li>
+        <li>การเล่นเกมนี้ <b>ไม่มีการเดิมพัน</b> ด้วยเงินจริง สินค้า หรือรางวัลที่มีมูลค่า และไม่มีการซื้อขาย/แลกเปลี่ยนสิทธิ์การเล่นในทุกกรณี</li>
+        <li>ผู้ให้บริการ <b>ไม่จัดให้มีการเล่นเกมพนัน</b> ตามพระราชบัญญัติว่าด้วยการพนัน พ.ศ. 2478 มาตรา 12</li>
+        <li>ผู้ให้บริการ <b>ไม่จัดให้มีการนำเข้าข้อมูล</b> เกี่ยวกับคดีการพนัน ตามพระราชบัญญัติว่าด้วยความผิดเกี่ยวกับคอมพิวเตอร์ พ.ศ. 2550</li>
+        <li>ระบบเล่นด้วยไพ่ตาม <b>พระราชบัญญัติไพ่ พ.ศ. 2486</b> ไม่ใช่ไพ่จำลองเพื่อการพนัน</li>
+      </ul>
+    </div>
+    <div style="margin-top:18px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap">
+      <button class="btn btn-secondary" onclick="closeDisclaimerModal()">✕ ยกเลิก</button>
+      <button class="btn btn-primary" onclick="acceptDisclaimer()">✅ รับทราบและเล่น</button>
+    </div>
   </div>
 </div>
 
@@ -869,6 +921,12 @@ body {
       <span class="gh-version" id="client-version" title="เวอร์ชันนี้ — คลิกเพื่อรีเฟรช" onclick="location.reload(true)">v?</span>
       <button class="btn btn-secondary" onclick="leaveRoom()" style="padding:6px 14px;font-size:0.85rem">← ออก</button>
     </div>
+  </div>
+
+  <!-- FIX v63 (2026-10-28, พี่เอ): ข้อตกลงการใช้งาน — เห็นชัดตลอดการเล่น -->
+  <div class="disclaimer-banner compact">
+    <div class="disclaimer-title">⚠️ ข้อตกลงการใช้งาน เพื่อความบันเทิง ห้ามเล่นพนันใดๆ</div>
+    <div class="disclaimer-text">เกมนี้เล่นเพื่อความบันเทิงเท่านั้น ไม่มีการเดิมพันเงินจริง · ผู้ให้บริการไม่จัดให้มีการเล่นเกมพนัน (พ.ร.บ. การพนัน พ.ศ. 2478 มาตรา 12) และไม่นำเข้าข้อมูลเกี่ยวกับคดีการพนัน (พ.ร.บ. คอมพิวเตอร์ พ.ศ. 2550)</div>
   </div>
 
   <!-- FIX v46: กล่องคู่แข่ง 3 กล่องแยก (คนละกล่อง) + ชุดไพ่ของแต่ละคน -->
@@ -986,7 +1044,7 @@ body {
 
 <script src="supabase.js?v=1"></script>
 <!-- FIX v41: กติกาโทษ -100 แบบใหม่ (2.1/2.2/2.3) — pure functions (ใช้เตือน UI + ใช้เป็นต้นแบบเดียวกับ SQL) -->
-<script src="speto-rules.js?v=62"></script>
-<script src="game-core.js?v=62"></script>
+<script src="speto-rules.js?v=63"></script>
+<script src="game-core.js?v=63"></script>
 </body>
 </html>

@@ -18,7 +18,7 @@
 // ============================================================
 
 // ===== FIX v59: เวอร์ชัน client (ต้องตรงกับ version.txt + cache-buster ใน index.html) =====
-var CLIENT_VERSION = 'v62';
+var CLIENT_VERSION = 'v63';
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRidGxiZXltcmNob2Rsb2JveW1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1MTIxNTksImV4cCI6MjEwNzA4ODE1OX0.HHqLCDj3_rEAeGQxs-Yz8eX-xJG0VbMbYWIELC6LYbc';
@@ -1686,6 +1686,40 @@ async function startGame() {
       }
     }, 1200);
   } catch(e) { console.error('startGame error:', e); notify('❌ ผิดพลาด: ' + e.message); }
+}
+
+// ===== FIX v63 (2026-10-28, พี่เอ): ข้อตกลงการใช้งาน — ห้ามเล่นพนันใดๆ =====
+//   popup กดรับทราบก่อนสร้างห้อง / สร้างห้องพร้อมบอท
+//   (ป้องกัน พ.ร.บ. การพนัน พ.ศ. 2478 มาตรา 12 + พ.ร.บ. คอมพิวเตอร์ พ.ศ. 2550 + พระราชบัญญัติไพ่ พ.ศ. 2486)
+var _pendingDisclaimerAction = null;
+
+function openDisclaimerModal(action) {
+  try {
+    _pendingDisclaimerAction = action || null;
+    var m = document.getElementById('disclaimer-modal');
+    if (m) m.classList.add('active');
+  } catch(e) { console.error('openDisclaimerModal error:', e); }
+}
+
+function closeDisclaimerModal() {
+  try {
+    _pendingDisclaimerAction = null;
+    var m = document.getElementById('disclaimer-modal');
+    if (m) m.classList.remove('active');
+  } catch(e) { console.error('closeDisclaimerModal error:', e); }
+}
+
+function acceptDisclaimer() {
+  var act = _pendingDisclaimerAction;
+  _pendingDisclaimerAction = null;
+  try {
+    var m = document.getElementById('disclaimer-modal');
+    if (m) m.classList.remove('active');
+  } catch(e) {}
+  try {
+    if (act === 'createRoom') { createRoom(); }
+    else if (act === 'quickPlay') { quickPlay(); }
+  } catch(e) { console.error('acceptDisclaimer error:', e); }
 }
 
 // --- GAME ACTIONS ---
