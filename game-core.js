@@ -1,5 +1,5 @@
 // ============================================================
-// 🃏 DUMMY RUMMY — game-core.js (FIX v60)
+// 🃏 DUMMY RUMMY — game-core.js (FIX v61)
 // - FIX v42 (คงไว้): กู้ห้อง game=NULL + แก้ findAllSetsAndRuns
 // - FIX v56 (คงไว้): กติกา "เกิดใบแรกที่หยิบ" (anchor) + คืนไพ่กลับเฟสจั่ว + timer อิง DB
 // - FIX v59 (2026-10-27, พี่เอ):
@@ -11,10 +11,11 @@
 //   ① เลิกบล็อก "หยิบใบที่ยังเกิดไม่ได้" ฝั่ง client — ให้ server เป็นเจ้าของกติกา (MUST_MELD_ANCHOR)
 //   ② อธิบายเหตุผลที่เกิดไม่ได้ (ตองไม่ครบ / สเปโตเข้าชุดเรียงไม่ได้ / เลขไม่เรียงต่อกัน)
 //   ③ ดัก error MUST_MELD_ANCHOR จาก server → ข้อความชัดเจน + เปิด modal เกิด
+// - FIX v61 (2026-10-28, พี่เอ): ดัก error CANNOT_LAYOFF_ANCHOR (server ห้ามฝาก anchor 10-28)
 // ============================================================
 
 // ===== FIX v59: เวอร์ชัน client (ต้องตรงกับ version.txt + cache-buster ใน index.html) =====
-var CLIENT_VERSION = 'v60';
+var CLIENT_VERSION = 'v61';
 
 const SUPABASE_URL = 'https://dbtlbeymrchodloboymr.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRidGxiZXltcmNob2Rsb2JveW1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1MTIxNTksImV4cCI6MjEwNzA4ODE1OX0.HHqLCDj3_rEAeGQxs-Yz8eX-xJG0VbMbYWIELC6LYbc';
@@ -749,6 +750,11 @@ async function rpcPlayTurn(action, opts) {
         var _anchorMsg = (data && data.details) ? String(data.details) : 'ต้องเกิดไพ่ใบแรกที่หยิบจากกองทิ้ง';
         notify('❌ ' + _anchorMsg + ' — กด "↩️ คืนไพ่ที่หยิบ" แล้วหยิบใบอื่น หรือเกิดชุดที่มีใบนั้นอยู่');
         openMeldModal();
+      } else if (data && data.error === 'CANNOT_LAYOFF_ANCHOR') {
+        // FIX v61 (2026-10-28, พี่เอ): server ห้าม "ฝาก" ไพ่ใบแรกที่หยิบ (anchor)
+        //   กติกา: anchor ต้อง "เกิด" เสมอ (ฝาก = ไม่ใช่การเกิด)
+        var _loMsg = (data && data.details) ? String(data.details) : 'ไพ่ใบแรกที่หยิบต้อง "เกิด" ไม่ใช่ "ฝาก"';
+        notify('❌ ' + _loMsg + ' · เกิดชุดที่มีใบนั้นก่อน หรือกด "↩️ คืนไพ่ที่หยิบ"');
       } else if (data && data.error === 'ROOM_NOT_FOUND') {
         // FIX v42: rooms.game เป็น NULL → พยายามกู้ห้องแล้วลองใหม่
         console.warn('[RPC] ROOM_NOT_FOUND — game เป็น NULL, กำลังกู้ห้อง');
@@ -3034,7 +3040,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var codeEl = document.getElementById('join-code');
     if (codeEl) codeEl.value = params.get('room');
   }
-  console.log('[DummyRummy] ' + CLIENT_VERSION + ' Loaded! (FIX v59 — anchor เกิดใบแรกที่หยิบ + ฝากเรียงเรียงไพ่ + ธง everMeld/everPick ไม่หาย + ทิ้งต้องจั่วก่อน)');
+  console.log('[DummyRummy] ' + CLIENT_VERSION + ' Loaded! (FIX v61 — หยิบใบที่ยังเกิดไม่ได้ได้ + อธิบายเหตุผล + ดัก MUST_MELD_ANCHOR / CANNOT_LAYOFF_ANCHOR)');
   // FIX v59: แสดงเวอร์ชันบนหน้าจอ + ตรวจว่า client เก่าหรือไม่ (รีเฟรชอัตโนมัติ)
   initVersionBadge();
   checkStaleClient();
