@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;600;700&family=Noto+Color+Emoji&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;600;700&family=Noto+Color+Emoji&family=Prompt:wght@300;400;500;600;700&family=Playfair+Display:wght@700;800;900&display=swap" rel="stylesheet">
 <title>🃏 ดัมมี่ 7 ใบ</title>
 <style>
 :root {
@@ -767,6 +767,355 @@ body {
   font-size: 1.05rem; flex: 0 0 auto;
 }
 .your-hand-header .yname .av { margin-right: 4px; }
+/* ============================================================
+   v65 — PREMIUM FELT THEME (2026-10-30)
+   อ้างอิงเกมสลาฟ (game-slave-card): ผ้าเขียวสักหลาด + ขอบทอง
+   + ฟอนต์ Prompt / Playfair Display
+   OVERRIDE ทับธีมเดิม — ไม่แตะ game logic ใด ๆ ทั้งสิ้น
+   ============================================================ */
+:root{
+  --bg:#021d17;
+  --card-bg:linear-gradient(180deg, rgba(6,54,42,.88), rgba(3,32,25,.94));
+  --accent:#e3bd68;
+  --gold:#e3bd68;
+  --gold-lite:#f7e6b4;
+  --text:#e9f6f0;
+  --green:#2f9a63;
+  --card-red:#c62828;
+}
+html,body{ height:100%; }
+body{
+  font-family:'Prompt','Noto Sans Thai','Noto Color Emoji','Segoe UI Emoji','Apple Color Emoji',system-ui,sans-serif;
+  background:radial-gradient(130% 85% at 50% -10%, #17916d 0%, #0a5b45 28%, #05402f 58%, #021d17 100%);
+  background-attachment:fixed;
+  color:#e9f6f0;
+  overflow-x:hidden;
+}
+body::before{
+  content:''; position:fixed; inset:0; pointer-events:none; z-index:0; opacity:.05;
+  background-image:radial-gradient(rgba(255,255,255,.9) .6px, transparent .6px);
+  background-size:3px 3px;
+}
+body::after{
+  content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background:radial-gradient(ellipse at 50% 45%, rgba(0,0,0,0) 45%, rgba(0,0,0,.45) 100%);
+}
+
+/* ===== HOME / HERO ===== */
+.home-hero{
+  text-align:center;
+  padding:34px 20px 30px;
+  background:linear-gradient(180deg, rgba(6,54,42,.72), rgba(3,32,25,.86));
+  border:1px solid rgba(227,189,104,.30);
+  border-radius:22px;
+  margin-bottom:16px;
+  box-shadow:0 18px 44px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06);
+  position:relative; overflow:hidden;
+}
+.home-hero::before{
+  content:''; position:absolute; left:-20%; right:-20%; top:-60%; height:150%;
+  background:radial-gradient(ellipse at 50% 0%, rgba(227,189,104,.22), transparent 62%);
+  pointer-events:none;
+}
+.home-hero::after{
+  content:'❖   สร้างห้อง  ·  เล่นเร็ว  ·  เก็บเกิด   ❖';
+  display:block; margin-top:14px;
+  font-size:.76rem; letter-spacing:.14em; color:rgba(227,189,104,.78);
+}
+.home-hero h1{
+  font-family:'Playfair Display',Georgia,serif;
+  font-size:2.6rem; font-weight:900; letter-spacing:.02em;
+  color:var(--gold-lite);
+  text-shadow:0 3px 22px rgba(227,189,104,.38), 0 1px 0 rgba(0,0,0,.45);
+  margin-bottom:8px;
+}
+.home-hero p{ color:#a8e0cd; font-size:1rem; margin-bottom:0; }
+
+/* ===== PANELS ===== */
+.form-card{
+  background:var(--card-bg);
+  border:1px solid rgba(227,189,104,.22);
+  border-radius:18px;
+  padding:20px 22px 22px;
+  margin-bottom:14px;
+  box-shadow:0 14px 34px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.05);
+  backdrop-filter:blur(6px);
+}
+.form-card h3{
+  color:var(--gold);
+  font-size:1.12rem; font-weight:700; letter-spacing:.01em;
+  margin-bottom:14px;
+  display:flex; align-items:center; gap:8px;
+}
+.form-row{ margin-bottom:13px; }
+.form-row label{
+  display:block; margin-bottom:6px;
+  color:#a8e0cd; font-size:.84rem; font-weight:600; letter-spacing:.02em;
+}
+.form-row input, .form-row select{
+  width:100%;
+  padding:12px 14px;
+  border-radius:12px;
+  border:1px solid rgba(227,189,104,.26);
+  background:rgba(0,0,0,.30);
+  color:#e9f6f0;
+  font-size:1rem;
+  font-family:inherit;
+  transition:border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+.form-row input:focus, .form-row select:focus{
+  outline:none;
+  border-color:var(--gold-lite);
+  box-shadow:0 0 0 3px rgba(227,189,104,.18);
+  background:rgba(0,0,0,.42);
+}
+.form-row select option{ background:#06382a; color:#e9f6f0; }
+
+/* ===== BUTTONS ===== */
+.btn{
+  padding:12px 26px;
+  border:none;
+  border-radius:13px;
+  font-size:1rem;
+  font-weight:700;
+  font-family:inherit;
+  letter-spacing:.01em;
+  cursor:pointer;
+  transition:transform .16s cubic-bezier(.2,.9,.3,1.2), box-shadow .16s ease, filter .16s ease;
+}
+.btn-primary{
+  background:linear-gradient(180deg,#f7df9a 0%, var(--gold) 55%, #b8912f 100%);
+  color:#2a1f06;
+  box-shadow:0 8px 20px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.6);
+}
+.btn-secondary{
+  background:linear-gradient(180deg, rgba(23,145,109,.55), rgba(5,64,47,.78));
+  color:#e9f6f0;
+  border:1px solid rgba(227,189,104,.32);
+  box-shadow:0 6px 16px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.06);
+}
+.btn-warning{
+  background:linear-gradient(180deg,#d9b13a,#a9822f);
+  color:#2a1f06;
+  box-shadow:0 6px 16px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.45);
+}
+.btn:hover{ transform:translateY(-2px); filter:brightness(1.07); box-shadow:0 12px 26px rgba(0,0,0,.5); }
+.btn:active{ transform:translateY(0) scale(.98); }
+.btn:disabled{ opacity:.42; cursor:not-allowed; transform:none; filter:none; }
+.divider{
+  text-align:center; color:rgba(227,189,104,.62);
+  margin:16px 0; font-size:.85rem; letter-spacing:.2em;
+}
+
+/* ===== LOBBY ===== */
+.lobby-code{
+  text-align:center;
+  padding:22px;
+  background:var(--card-bg);
+  border:1px solid rgba(227,189,104,.26);
+  border-radius:18px;
+  margin-bottom:16px;
+  box-shadow:0 14px 34px rgba(0,0,0,.42);
+}
+.lobby-code .label{ color:#a8e0cd; font-size:.88rem; margin-bottom:8px; letter-spacing:.08em; }
+.lobby-code .code{
+  font-family:'Playfair Display',Georgia,serif;
+  font-size:2.6rem; font-weight:900; color:var(--gold-lite);
+  letter-spacing:8px;
+  text-shadow:0 2px 18px rgba(227,189,104,.38);
+}
+.player-slot{
+  background:var(--card-bg);
+  border-radius:16px;
+  padding:16px;
+  text-align:center;
+  border:2px solid rgba(227,189,104,.18);
+  box-shadow:0 10px 24px rgba(0,0,0,.35);
+}
+.player-slot.filled{ border-color:var(--gold); }
+.player-slot.you{
+  border-color:var(--gold-lite);
+  background:linear-gradient(180deg, rgba(227,189,104,.14), rgba(3,32,25,.9));
+}
+.player-slot .pemoji{ font-size:2rem; margin-bottom:6px; }
+.player-slot .pname{ font-weight:700; color:#fff; font-size:.95rem; }
+.player-slot .ptype{ color:#8fcbb4; font-size:.8rem; margin-top:4px; }
+
+/* ===== CARDS ===== */
+.hand-card, .mini-card, .dp-card, .meld-set-display .ms-card{
+  background:linear-gradient(165deg,#fffef9 0%,#fbf6e8 45%,#efe6cf 100%);
+  border:1px solid rgba(146,118,58,.38);
+  color:#15251f;
+  box-shadow:0 6px 14px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.9),
+    inset 0 0 0 3px rgba(146,118,58,.16);
+}
+.hand-card.red, .mini-card.red, .dp-card.red, .meld-set-display .ms-card.red{
+  background:linear-gradient(165deg,#fffdf8,#fff1f0 60%,#ffe4e1);
+  color:#c62828; border-color:rgba(198,40,40,.35);
+}
+.hand-card.black, .mini-card.black, .dp-card.black, .meld-set-display .ms-card.black{
+  background:linear-gradient(165deg,#fdfdff,#f2f3fb 60%,#e5e7f4);
+  color:#1a237e; border-color:rgba(26,35,126,.35);
+}
+.hand-card.clubs, .mini-card.clubs, .dp-card.clubs{
+  background:linear-gradient(165deg,#fbfdff,#eaf4fd 60%,#d7eafb);
+  color:#1a5fa8; border-color:rgba(26,95,168,.32);
+}
+.hand-card.joker, .mini-card.joker, .dp-card.joker, .meld-set-display .ms-card.joker{
+  background:linear-gradient(135deg,#ffe9a8,#f5c518);
+  color:#4a3200; border-color:#d9b13a;
+}
+.hand-card.speto, .mini-card.speto, .dp-card.speto, .meld-set-display .ms-card.speto{
+  background:linear-gradient(160deg,#1b4f7a 0%,#123a5c 55%,#0d2a45 100%);
+  color:var(--gold-lite); border-color:rgba(227,189,104,.55);
+}
+.hand-card.selected{
+  transform:translateY(-12px);
+  box-shadow:0 14px 28px rgba(0,0,0,.55), 0 0 0 3px var(--gold-lite), 0 0 26px rgba(227,189,104,.5);
+  border-color:var(--gold-lite);
+}
+
+/* ===== OPPONENTS ===== */
+.opp-box{
+  background:linear-gradient(180deg, rgba(8,60,46,.78), rgba(3,32,25,.88));
+  border:1px solid rgba(227,189,104,.24);
+  border-radius:14px;
+  box-shadow:0 8px 20px rgba(0,0,0,.34);
+}
+.opp-box.active-turn{
+  border-color:var(--gold-lite);
+  box-shadow:0 0 0 3px rgba(227,189,104,.26), 0 0 22px rgba(227,189,104,.42);
+}
+.opp-box .opp-count{ color:#a8e0cd; }
+.opp-box .opp-empty{ color:rgba(233,246,240,.42); }
+.opponent-card{
+  background:var(--card-bg);
+  border-radius:14px;
+  padding:16px;
+  border:2px solid rgba(227,189,104,.2);
+  box-shadow:0 10px 24px rgba(0,0,0,.35);
+}
+.opponent-card.active-turn{ border-color:var(--gold); box-shadow:0 0 16px rgba(227,189,104,.4); }
+.meld-chip{
+  background:rgba(227,189,104,.14);
+  border:1px solid rgba(227,189,104,.5);
+  border-radius:6px;
+  padding:2px 6px;
+  font-size:.65rem;
+  color:var(--gold-lite);
+}
+.meld-set{
+  background:linear-gradient(180deg, rgba(23,145,109,.5), rgba(5,64,47,.72));
+  border:2px solid rgba(227,189,104,.22);
+  border-radius:12px;
+}
+.meld-set:hover{ border-color:var(--gold); }
+
+/* ===== DECK / TABLE ===== */
+.deck-stack .card{
+  background:repeating-linear-gradient(45deg, rgba(255,255,255,.08) 0 6px, rgba(255,255,255,0) 6px 12px),
+    linear-gradient(160deg,#1b4f7a 0%,#123a5c 55%,#0d2a45 100%);
+  border:1px solid rgba(227,189,104,.5);
+  border-radius:10px;
+}
+.deck-label{ color:#a8e0cd; }
+#game-screen{
+  background:radial-gradient(ellipse at 50% -10%, #1f9c6d 0%, #14724a 42%, #0a4429 100%);
+  border:10px solid #4a2e16;
+  border-radius:26px;
+  box-shadow:0 0 0 2px var(--gold), 0 22px 60px rgba(0,0,0,.65), inset 0 0 70px rgba(0,0,0,.35);
+}
+#game-screen .game-header{ background:rgba(0,0,0,.32); border:1px solid rgba(227,189,104,.3); }
+#game-screen .turn-indicator{ color:var(--gold-lite); }
+#game-screen .round-info{ color:#cbb994; }
+#game-screen .game-row2{ background:rgba(0,0,0,.24); border:1px solid rgba(227,189,104,.25); }
+#game-screen .game-row4{ background:rgba(0,0,0,.2); border:1px solid rgba(227,189,104,.22); }
+#game-screen .opponent-card{ background:rgba(0,0,0,.26); border-color:rgba(227,189,104,.22); }
+#game-screen .scoreboard{ background:rgba(0,0,0,.25); border:1px solid rgba(227,189,104,.22); }
+
+/* ===== SCORE / STATUS ===== */
+.scoreboard{
+  background:var(--card-bg);
+  border:1px solid rgba(227,189,104,.22);
+  border-radius:14px;
+  padding:10px;
+  margin-top:4px;
+}
+.score-item.highlight{
+  background:rgba(227,189,104,.14);
+  box-shadow:inset 0 0 0 1px rgba(227,189,104,.35);
+}
+.score-item .sname{ color:#a8e0cd; }
+.score-item .spoint{ color:var(--gold-lite); }
+.action-hint{ color:#f7df9a; }
+.pile-badge{ border-color:rgba(227,189,104,.45); color:var(--gold-lite); }
+.notification{
+  background:linear-gradient(180deg, rgba(6,54,42,.97), rgba(2,25,20,.98));
+  color:#e9f6f0;
+  border:1px solid var(--gold);
+  box-shadow:0 16px 40px rgba(0,0,0,.6);
+}
+
+/* ===== DISCLAIMER ===== */
+.disclaimer-banner{
+  background:linear-gradient(180deg, rgba(60,42,8,.55), rgba(28,20,4,.45));
+  border:1px solid rgba(227,189,104,.35);
+  border-radius:16px;
+  padding:12px 14px;
+  margin:14px 0;
+  text-align:center;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.05);
+}
+.disclaimer-banner.compact{ padding:8px 12px; margin:8px 0; border-radius:12px; }
+.disclaimer-title{ color:#f7df9a; font-weight:800; font-size:1rem; }
+.disclaimer-banner.compact .disclaimer-title{ font-size:.86rem; }
+.disclaimer-text{ color:#d8e8e0; font-size:.82rem; line-height:1.55; margin-top:6px; }
+.disclaimer-banner.compact .disclaimer-text{ font-size:.73rem; margin-top:3px; line-height:1.45; }
+.disclaimer-text b{ color:#f7df9a; }
+.disclaimer-main{ color:#f7df9a; font-weight:800; text-align:center; font-size:1.06rem; margin:0 0 6px; }
+.disclaimer-text-lg{ color:#d8e8e0; font-size:.9rem; line-height:1.7; text-align:left; }
+.disclaimer-text-lg b{ color:#f7df9a; }
+
+/* ===== MODALS ===== */
+.modal-overlay{ background:rgba(2,15,11,.78); backdrop-filter:blur(4px); }
+.modal{
+  background:linear-gradient(180deg, rgba(6,54,42,.95), rgba(2,25,20,.97));
+  border:1px solid rgba(227,189,104,.30);
+  border-radius:20px;
+  box-shadow:0 24px 60px rgba(0,0,0,.62), inset 0 1px 0 rgba(255,255,255,.05);
+}
+.modal h3{ color:var(--gold); }
+.endgame-modal{
+  background:linear-gradient(180deg, rgba(6,54,42,.96), rgba(2,25,20,.98));
+  border:1px solid var(--gold);
+  box-shadow:0 24px 60px rgba(0,0,0,.64);
+}
+.endgame-table th, .endgame-table td{ border-bottom:1px solid rgba(227,189,104,.18); }
+.endgame-table .winner-row{ background:rgba(227,189,104,.12); color:var(--gold-lite); }
+.eg-row{ background:rgba(255,255,255,.05); }
+.eg-ok{
+  background:linear-gradient(180deg,#f7df9a,var(--gold) 55%,#b8912f);
+  color:#2a1f06; border:none; border-radius:12px; padding:10px 26px;
+  font-size:.95rem; font-weight:800; cursor:pointer;
+  box-shadow:0 8px 20px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.55);
+}
+.eg-newroom .eg-btn{
+  background:linear-gradient(180deg, rgba(23,145,109,.6), rgba(5,64,47,.8));
+  color:#e9f6f0; border:1px solid rgba(227,189,104,.45);
+}
+.eg-newroom .eg-btn:hover{ background:linear-gradient(180deg, rgba(30,175,130,.7), rgba(8,80,58,.85)); }
+.eg-pt .lbl{ color:#a8e0cd; }
+.eg-pile-label{ color:#a8e0cd; }
+.eg-nm{ color:#fff; }
+
+/* ===== ANIM ===== */
+.screen{ animation:screenIn .32s cubic-bezier(.2,.9,.3,1); }
+@keyframes screenIn{
+  from{ opacity:0; transform:translateY(10px); }
+  to{ opacity:1; transform:none; }
+}
+.home-hero{ animation:screenIn .45s cubic-bezier(.2,.9,.3,1); }
+
 </style>
 </head>
 <body>
@@ -1044,7 +1393,7 @@ body {
 
 <script src="supabase.js?v=1"></script>
 <!-- FIX v41: กติกาโทษ -100 แบบใหม่ (2.1/2.2/2.3) — pure functions (ใช้เตือน UI + ใช้เป็นต้นแบบเดียวกับ SQL) -->
-<script src="speto-rules.js?v=64"></script>
-<script src="game-core.js?v=64"></script>
+<script src="speto-rules.js?v=65"></script>
+<script src="game-core.js?v=65"></script>
 </body>
 </html>
